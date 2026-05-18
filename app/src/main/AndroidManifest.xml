@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- Bluetooth Classic を必須機能として宣言。
+         Play Store では Bluetooth 非搭載端末向けに自動でフィルタされる。 -->
+    <uses-feature
+        android:name="android.hardware.bluetooth"
+        android:required="true" />
+
+    <!-- API 31+ の新方式 Bluetooth パーミッション。
+         minSdk = 31 に統一しているので旧方式 (BLUETOOTH / BLUETOOTH_ADMIN) は不要。
+         - BLUETOOTH_CONNECT  : ペアリング済み端末との接続・通信に必要
+         - BLUETOOTH_ADVERTISE: 自端末を PC から見つけてもらえるよう discoverable にするのに必要
+         BLUETOOTH_SCAN は「相手を探す側」用なので、ペリフェラル動作の本アプリでは要求しない。 -->
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
+
+    <application
+        android:allowBackup="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.VirtualTrackpad">
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:theme="@style/Theme.VirtualTrackpad"
+            android:screenOrientation="fullUser"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+
+</manifest>
