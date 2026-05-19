@@ -54,7 +54,7 @@ private fun bytes(vararg values: Int): ByteArray =
  *   - byte2〜7: 同時押しキーコード 最大6個 (HID Usage ID、0=未押下)
  *
  * キーボードを追加した主目的は「Ctrl+ホイール」でピンチズームを実現するため。
- * 将来的に 3本指ジェスチャー → Win+Tab などのショートカット送信にも使える。
+ * 将来的に 4本指ジェスチャー → Win+Tab などのショートカット送信にも使える。
  *
  * 詳細仕様: USB HID 1.11 / HUT 1.12
  */
@@ -267,6 +267,12 @@ class HidMouseManager(private val context: Context) {
      */
     private var reregisterAttempts = 0
 
+    // ─── 性能計測 (temporary instrumentation) ───
+    // sendMouseMove() で実際に sendReport() を呼んだ回数と、その失敗回数。
+    // 「もっさり」原因切り分け用。不要になったらこの 2 つと sendMouseMove 内の集計ブロックを削除。
+    private var btSentCount = 0
+    private var btFailedCount = 0
+
     /**
      * マネージャを起動する。
      * 1. BluetoothAdapter を取得
@@ -446,7 +452,18 @@ class HidMouseManager(private val context: Context) {
             hWheel.coerceIn(-127, 127).toByte()
         )
         // Descriptor で Report ID 1 = マウスと定義したので、ここでは 1 を渡す。
-        return hid.sendReport(device, REPORT_ID_MOUSE, report)
+        val ok = hid.sendReport(device, REPORT_ID_MOUSE, report)
+
+        // ─── 性能計測 (temporary) ───
+        // 200 回ごとに 1 行だけログを出す。失敗が増えていれば BT パイプ詰まり。
+        btSentCount++
+        if (!ok) btFailedCount++
+        if (btSentCount % 200 == 0) {
+            val pct = btFailedCount * 100 / btSentCount
+            AppLog.d("BT: sent=$btSentCount failed=$btFailedCount (${pct}%)")
+        }
+
+        return ok
     }
 
     /**

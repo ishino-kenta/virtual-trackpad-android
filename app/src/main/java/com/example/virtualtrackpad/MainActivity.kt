@@ -24,13 +24,12 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.RadioButton
@@ -143,10 +142,10 @@ sealed class AppScreen {
     /** メイン画面：トラックパッド + 右上の長押しメニュー起動ボタン。 */
     object Trackpad : AppScreen()
 
-    /** 設定画面：HID 状態表示・ペアリング・接続・切断、ログへのリンク。 */
+    /** 設定画面：HID 状態表示・ペアリング・接続・切断、各種設定。 */
     object Settings : AppScreen()
 
-    /** ログ画面：AppLog のエントリ一覧。 */
+    /** ログ画面：AppLog のエントリ一覧。トラックパッド画面の右上ドット3連タップで開く。 */
     object Logs : AppScreen()
 }
 
@@ -212,18 +211,26 @@ fun AppRoot(modifier: Modifier = Modifier) {
     var pinchSlopDp by remember { mutableStateOf(PinchSlopPref.load(appContext)) }
     // ピンチ中の2点間線描画 ON/OFF
     var pinchLine by remember { mutableStateOf(PinchLinePref.load(appContext)) }
-    // 3本指スワイプで戻る/進む ON/OFF
-    var threeFingerSwipe by remember { mutableStateOf(ThreeFingerSwipePref.load(appContext)) }
-    // 3本指スワイプ発火しきい値 (dp)
-    var threeFingerSwipeThresholdDp by remember {
-        mutableStateOf(ThreeFingerSwipeThresholdPref.load(appContext))
+    // 4本指スワイプで戻る/進む ON/OFF
+    var fourFingerSwipe by remember { mutableStateOf(FourFingerSwipePref.load(appContext)) }
+    // 4本指スワイプ発火しきい値 (dp)
+    var fourFingerSwipeThresholdDp by remember {
+        mutableStateOf(FourFingerSwipeThresholdPref.load(appContext))
     }
-    // 3本指スワイプの予兆表示 (カーテン + 三角) ON/OFF
-    var threeFingerSwipeIndicator by remember {
-        mutableStateOf(ThreeFingerSwipeIndicatorPref.load(appContext))
+    // 4本指スワイプの予兆表示 (カーテン + 三角) ON/OFF
+    var fourFingerSwipeIndicator by remember {
+        mutableStateOf(FourFingerSwipeIndicatorPref.load(appContext))
     }
     // 指のタッチ位置を示す円ドット ON/OFF
     var pointerDots by remember { mutableStateOf(PointerDotsPref.load(appContext)) }
+    // 1本指タップで左クリックを送る機能の ON/OFF
+    var leftClickEnabled by remember { mutableStateOf(LeftClickPref.load(appContext)) }
+    // 2本指タップで右クリックを送る機能の ON/OFF
+    var rightClickEnabled by remember { mutableStateOf(RightClickPref.load(appContext)) }
+    // ダブルタップ→ドラッグ機能の ON/OFF
+    var dragEnabled by remember { mutableStateOf(DragPref.load(appContext)) }
+    // 2本指スクロール機能の ON/OFF
+    var scrollEnabled by remember { mutableStateOf(ScrollPref.load(appContext)) }
 
     DisposableEffect(Unit) {
         manager.start()
@@ -231,12 +238,10 @@ fun AppRoot(modifier: Modifier = Modifier) {
     }
 
     // システムのバックジェスチャーで一つ前の画面に戻る。
+    // 設定もログもトラックパッド画面から直接遷移する設計なので、戻り先は常にトラックパッド。
     // トラックパッド画面では BackHandler は無効化してデフォルト動作（アプリ終了）に任せる。
     BackHandler(enabled = screen != AppScreen.Trackpad) {
-        screen = when (screen) {
-            AppScreen.Logs -> AppScreen.Settings  // ログ → 設定に戻る
-            else -> AppScreen.Trackpad            // 設定 → トラックパッドに戻る
-        }
+        screen = AppScreen.Trackpad
     }
 
     when (screen) {
@@ -244,6 +249,7 @@ fun AppRoot(modifier: Modifier = Modifier) {
             manager = manager,
             scope = scope,
             onOpenMenu = { screen = AppScreen.Settings },
+            onOpenLogs = { screen = AppScreen.Logs },
             sensitivity = sensitivity,
             scrollSensitivity = scrollSensitivity,
             naturalScroll = naturalScroll,
@@ -261,10 +267,14 @@ fun AppRoot(modifier: Modifier = Modifier) {
             pinchSensitivity = pinchSensitivity,
             pinchSlopDp = pinchSlopDp,
             pinchLine = pinchLine,
-            threeFingerSwipe = threeFingerSwipe,
-            threeFingerSwipeThresholdDp = threeFingerSwipeThresholdDp,
-            threeFingerSwipeIndicator = threeFingerSwipeIndicator,
+            fourFingerSwipe = fourFingerSwipe,
+            fourFingerSwipeThresholdDp = fourFingerSwipeThresholdDp,
+            fourFingerSwipeIndicator = fourFingerSwipeIndicator,
             pointerDots = pointerDots,
+            leftClickEnabled = leftClickEnabled,
+            rightClickEnabled = rightClickEnabled,
+            dragEnabled = dragEnabled,
+            scrollEnabled = scrollEnabled,
             modifier = modifier
         )
         AppScreen.Settings -> SettingsScreen(
@@ -359,32 +369,51 @@ fun AppRoot(modifier: Modifier = Modifier) {
                 pinchLine = v
                 PinchLinePref.save(appContext, v)
             },
-            threeFingerSwipe = threeFingerSwipe,
-            onThreeFingerSwipeChange = { v ->
-                threeFingerSwipe = v
-                ThreeFingerSwipePref.save(appContext, v)
+            fourFingerSwipe = fourFingerSwipe,
+            onFourFingerSwipeChange = { v ->
+                fourFingerSwipe = v
+                FourFingerSwipePref.save(appContext, v)
             },
-            threeFingerSwipeThresholdDp = threeFingerSwipeThresholdDp,
-            onThreeFingerSwipeThresholdDpChange = { v ->
-                threeFingerSwipeThresholdDp = v
-                ThreeFingerSwipeThresholdPref.save(appContext, v)
+            fourFingerSwipeThresholdDp = fourFingerSwipeThresholdDp,
+            onFourFingerSwipeThresholdDpChange = { v ->
+                fourFingerSwipeThresholdDp = v
+                FourFingerSwipeThresholdPref.save(appContext, v)
             },
-            threeFingerSwipeIndicator = threeFingerSwipeIndicator,
-            onThreeFingerSwipeIndicatorChange = { v ->
-                threeFingerSwipeIndicator = v
-                ThreeFingerSwipeIndicatorPref.save(appContext, v)
+            fourFingerSwipeIndicator = fourFingerSwipeIndicator,
+            onFourFingerSwipeIndicatorChange = { v ->
+                fourFingerSwipeIndicator = v
+                FourFingerSwipeIndicatorPref.save(appContext, v)
             },
             pointerDots = pointerDots,
             onPointerDotsChange = { v ->
                 pointerDots = v
                 PointerDotsPref.save(appContext, v)
             },
+            leftClickEnabled = leftClickEnabled,
+            onLeftClickEnabledChange = { v ->
+                leftClickEnabled = v
+                LeftClickPref.save(appContext, v)
+            },
+            rightClickEnabled = rightClickEnabled,
+            onRightClickEnabledChange = { v ->
+                rightClickEnabled = v
+                RightClickPref.save(appContext, v)
+            },
+            dragEnabled = dragEnabled,
+            onDragEnabledChange = { v ->
+                dragEnabled = v
+                DragPref.save(appContext, v)
+            },
+            scrollEnabled = scrollEnabled,
+            onScrollEnabledChange = { v ->
+                scrollEnabled = v
+                ScrollPref.save(appContext, v)
+            },
             onBack = { screen = AppScreen.Trackpad },
-            onOpenLogs = { screen = AppScreen.Logs },
             modifier = modifier
         )
         AppScreen.Logs -> LogsScreen(
-            onBack = { screen = AppScreen.Settings },
+            onBack = { screen = AppScreen.Trackpad },
             modifier = modifier
         )
     }
@@ -398,6 +427,7 @@ fun AppRoot(modifier: Modifier = Modifier) {
  * @param manager     マウス操作の送信を担当する [HidMouseManager]
  * @param scope       タップ／右クリックの suspend 関数を起動するスコープ
  * @param onOpenMenu  右上の長押しが満タンになった時に呼ばれるコールバック（設定画面へ遷移）
+ * @param onOpenLogs  右上を3連タップしたときに呼ばれるコールバック（ログ画面へ遷移）
  * @param sensitivity         カーソル感度倍率（設定画面で変更可能）
  * @param scrollSensitivity   スクロール感度倍率（設定画面で変更可能）
  * @param naturalScroll       ナチュラルスクロール方向か（設定画面で変更可能）
@@ -415,10 +445,14 @@ fun AppRoot(modifier: Modifier = Modifier) {
  * @param pinchSensitivity      ピンチ感度倍率
  * @param pinchSlopDp           ピンチ判定の発火しきい値 (dp)
  * @param pinchLine             ピンチ中に2点間を線で結ぶ視覚表示の ON/OFF
- * @param threeFingerSwipe              3本指の左右スワイプで戻る/進むを送る ON/OFF
- * @param threeFingerSwipeThresholdDp   3本指スワイプの発火しきい値 (dp)
- * @param threeFingerSwipeIndicator     3本指スワイプの予兆カーテン+三角の表示 ON/OFF
+ * @param fourFingerSwipe              4本指の左右スワイプで戻る/進むを送る ON/OFF
+ * @param fourFingerSwipeThresholdDp   4本指スワイプの発火しきい値 (dp)
+ * @param fourFingerSwipeIndicator     4本指スワイプの予兆カーテン+三角の表示 ON/OFF
  * @param pointerDots                   指のタッチ位置を示す円ドットの表示 ON/OFF
+ * @param leftClickEnabled              1本指タップで左クリック送信の ON/OFF
+ * @param rightClickEnabled             2本指タップで右クリック送信の ON/OFF
+ * @param dragEnabled                   ダブルタップ→ドラッグの ON/OFF
+ * @param scrollEnabled                 2本指スクロール (慣性含む) の ON/OFF
  * @param modifier              配置調整用 Modifier
  */
 @Composable
@@ -426,6 +460,7 @@ fun TrackpadView(
     manager: HidMouseManager,
     scope: CoroutineScope,
     onOpenMenu: () -> Unit,
+    onOpenLogs: () -> Unit,
     sensitivity: Float,
     scrollSensitivity: Float,
     naturalScroll: Boolean,
@@ -443,10 +478,14 @@ fun TrackpadView(
     pinchSensitivity: Float,
     pinchSlopDp: Float,
     pinchLine: Boolean,
-    threeFingerSwipe: Boolean,
-    threeFingerSwipeThresholdDp: Float,
-    threeFingerSwipeIndicator: Boolean,
+    fourFingerSwipe: Boolean,
+    fourFingerSwipeThresholdDp: Float,
+    fourFingerSwipeIndicator: Boolean,
     pointerDots: Boolean,
+    leftClickEnabled: Boolean,
+    rightClickEnabled: Boolean,
+    dragEnabled: Boolean,
+    scrollEnabled: Boolean,
     modifier: Modifier = Modifier
 ) {
     Box(modifier = modifier) {
@@ -464,10 +503,14 @@ fun TrackpadView(
             pinchSensitivity = pinchSensitivity,
             pinchSlopDp = pinchSlopDp,
             pinchLine = pinchLine,
-            threeFingerSwipe = threeFingerSwipe,
-            threeFingerSwipeThresholdDp = threeFingerSwipeThresholdDp,
-            threeFingerSwipeIndicator = threeFingerSwipeIndicator,
+            fourFingerSwipe = fourFingerSwipe,
+            fourFingerSwipeThresholdDp = fourFingerSwipeThresholdDp,
+            fourFingerSwipeIndicator = fourFingerSwipeIndicator,
             pointerDots = pointerDots,
+            leftClickEnabled = leftClickEnabled,
+            rightClickEnabled = rightClickEnabled,
+            dragEnabled = dragEnabled,
+            scrollEnabled = scrollEnabled,
             tapTimeoutMs = tapTimeoutMs,
             tapSlopDp = tapSlopDp,
             doubleTapIntervalMs = doubleTapIntervalMs,
@@ -507,8 +550,8 @@ fun TrackpadView(
             onPinchEnd = {
                 manager.sendKeyboardReport(modifier = 0)
             },
-            // 3本指左スワイプ → Alt+← (ブラウザの戻る)
-            onThreeFingerSwipeLeft = {
+            // 4本指左スワイプ → Alt+← (ブラウザの戻る)
+            onFourFingerSwipeLeft = {
                 scope.launch {
                     manager.sendKey(
                         HidMouseManager.HID_KEY_LEFT_ARROW,
@@ -516,8 +559,8 @@ fun TrackpadView(
                     )
                 }
             },
-            // 3本指右スワイプ → Alt+→ (ブラウザの進む)
-            onThreeFingerSwipeRight = {
+            // 4本指右スワイプ → Alt+→ (ブラウザの進む)
+            onFourFingerSwipeRight = {
                 scope.launch {
                     manager.sendKey(
                         HidMouseManager.HID_KEY_RIGHT_ARROW,
@@ -527,13 +570,45 @@ fun TrackpadView(
             }
         )
 
-        // 右上の控えめなドット。長押し完了でメニュー(=設定画面)へ。
+        // 右上の控えめなドット。
+        //   - 長押し完了でメニュー(=設定画面)へ
+        //   - 3連タップでログ画面へ (隠しショートカット)
         HoldToToggleButton(
             onActivate = onOpenMenu,
+            onTripleTap = onOpenLogs,
             holdDurationMs = menuHoldDurationMs.toLong(),
             modifier = Modifier
                 .align(Alignment.TopEnd)
                 .padding(8.dp)
+        )
+    }
+}
+
+/**
+ * 設定画面の中で「グループの区切り」を示すセクションタイトル。
+ * 上に少し空きを取って、控えめなグレー文字とアンダーラインで「ここから別ジャンル」を示す。
+ *
+ * @param title    セクション名（例: "スクロール"）
+ * @param modifier 配置調整用 Modifier
+ */
+@Composable
+fun SettingsGroupHeader(title: String, modifier: Modifier = Modifier) {
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(top = 20.dp, bottom = 4.dp)
+    ) {
+        Text(
+            text = title,
+            color = Color(0xFFAAAAAA),    // 設定項目の本文白より一段暗いグレー
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+        )
+        // 細い区切り線。設定本体との「上下の領域分け」を視覚的に補強
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(1.dp)
+                .background(Color(0xFF333333))
         )
     }
 }
@@ -549,7 +624,6 @@ fun TrackpadView(
  * @param naturalScroll              現在のスクロール方向 (true: ナチュラル)
  * @param onNaturalScrollChange      方向トグル操作時のコールバック
  * @param onBack                     「戻る」ボタンで呼ばれるコールバック
- * @param onOpenLogs                 「ログを見る」ボタンで呼ばれるコールバック
  * @param modifier                   配置調整用 Modifier
  */
 @Composable
@@ -591,21 +665,29 @@ fun SettingsScreen(
     onPinchSlopDpChange: (Float) -> Unit,
     pinchLine: Boolean,
     onPinchLineChange: (Boolean) -> Unit,
-    threeFingerSwipe: Boolean,
-    onThreeFingerSwipeChange: (Boolean) -> Unit,
-    threeFingerSwipeThresholdDp: Float,
-    onThreeFingerSwipeThresholdDpChange: (Float) -> Unit,
-    threeFingerSwipeIndicator: Boolean,
-    onThreeFingerSwipeIndicatorChange: (Boolean) -> Unit,
+    fourFingerSwipe: Boolean,
+    onFourFingerSwipeChange: (Boolean) -> Unit,
+    fourFingerSwipeThresholdDp: Float,
+    onFourFingerSwipeThresholdDpChange: (Float) -> Unit,
+    fourFingerSwipeIndicator: Boolean,
+    onFourFingerSwipeIndicatorChange: (Boolean) -> Unit,
     pointerDots: Boolean,
     onPointerDotsChange: (Boolean) -> Unit,
+    leftClickEnabled: Boolean,
+    onLeftClickEnabledChange: (Boolean) -> Unit,
+    rightClickEnabled: Boolean,
+    onRightClickEnabledChange: (Boolean) -> Unit,
+    dragEnabled: Boolean,
+    onDragEnabledChange: (Boolean) -> Unit,
+    scrollEnabled: Boolean,
+    onScrollEnabledChange: (Boolean) -> Unit,
     onBack: () -> Unit,
-    onOpenLogs: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    // 外側の Column は TopBar (固定) + 内側のスクロール可能 Column の親。
-    // 横画面など縦幅が足りない時に下部のボタンが見切れないよう、
-    // 設定項目側を verticalScroll で囲んでスクロール可能にする。
+    // 外側の Column は TopBar (固定) + 設定項目用 LazyColumn の親。
+    // 設定項目は数が多いので LazyColumn にして、画面に出ている要素だけ compose する。
+    // 以前は Column + verticalScroll で全項目を一気に compose していて、
+    // 設定画面を開くたびに 25 個以上の Slider/Toggle を build していたため遅かった。
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -613,289 +695,322 @@ fun SettingsScreen(
     ) {
         TopBar(title = "設定", onBack = onBack)
 
-        Column(
+        LazyColumn(
             modifier = Modifier
                 .fillMaxWidth()
-                .verticalScroll(rememberScrollState())
+                .weight(1f)
         ) {
+            // ─────────────── 接続・ペアリング ───────────────
+            item { SettingsGroupHeader("接続・ペアリング") }
+
             // 現在の HID 接続状態を1行表示
-            HidStatusOverlay(
-                state = manager.state,
-                modifier = Modifier.fillMaxWidth()
-            )
+            item {
+                HidStatusOverlay(
+                    state = manager.state,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
 
             // ペアリング許可: 登録済み or 接続中で表示。設定値に応じた時間で発見可能にする。
             if (manager.state is HidState.Registered || manager.state is HidState.Connected) {
-                DiscoverableButton(
-                    durationSec = discoverableSec.toInt(),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(8.dp)
-                )
+                item {
+                    DiscoverableButton(
+                        durationSec = discoverableSec.toInt(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(8.dp)
+                    )
+                }
             }
             // 能動接続: 待機中(=未接続)で表示
             if (manager.state is HidState.Registered) {
-                ConnectButton(
-                    manager = manager,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 8.dp)
-                )
+                item {
+                    ConnectButton(
+                        manager = manager,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 8.dp)
+                    )
+                }
             }
             // 切断: 接続中で表示
             if (manager.state is HidState.Connected) {
-                DisconnectButton(
-                    manager = manager,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 8.dp)
+                item {
+                    DisconnectButton(
+                        manager = manager,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 8.dp)
+                    )
+                }
+            }
+
+            // ペアリング許可時間 (Discoverable 持続時間)
+            item {
+                SliderSetting(
+                    title = "ペアリング許可時間",
+                    value = discoverableSec,
+                    onValueChange = onDiscoverableSecChange,
+                    valueRange = DiscoverableDurationPref.MIN..DiscoverableDurationPref.MAX,
+                    valueLabel = {
+                        val sec = it.toInt()
+                        if (sec >= 60) "${sec / 60}分" else "${sec}秒"
+                    },
+                    leftLabel = "短い",
+                    rightLabel = "長い",
+                    modifier = Modifier.fillMaxWidth()
                 )
             }
 
+            // ─────────────── 機能 ON/OFF ───────────────
+            // ポインタ移動とメニュー以外の機能の ON/OFF をここに集約。
+            // 詳細パラメータ (感度・しきい値) は各機能ごとの後続セクションで調整する。
+            item { SettingsGroupHeader("機能 ON/OFF") }
+
+            item { LeftClickToggle(leftClickEnabled, onLeftClickEnabledChange, Modifier.fillMaxWidth()) }
+            item { RightClickToggle(rightClickEnabled, onRightClickEnabledChange, Modifier.fillMaxWidth()) }
+            item { DragToggle(dragEnabled, onDragEnabledChange, Modifier.fillMaxWidth()) }
+            item { ScrollToggle(scrollEnabled, onScrollEnabledChange, Modifier.fillMaxWidth()) }
+            item { InertialScrollToggle(inertialScroll, onInertialScrollChange, Modifier.fillMaxWidth()) }
+            item { InertialStackingToggle(inertialStacking, onInertialStackingChange, Modifier.fillMaxWidth()) }
+            item { PinchZoomToggle(pinchZoom, onPinchZoomChange, Modifier.fillMaxWidth()) }
+            item {
+                FourFingerSwipeToggle(
+                    enabled = fourFingerSwipe,
+                    onEnabledChange = onFourFingerSwipeChange,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+            item { PointerDotsToggle(pointerDots, onPointerDotsChange, Modifier.fillMaxWidth()) }
+            item { PinchLineToggle(pinchLine, onPinchLineChange, Modifier.fillMaxWidth()) }
+            item {
+                FourFingerSwipeIndicatorToggle(
+                    enabled = fourFingerSwipeIndicator,
+                    onEnabledChange = onFourFingerSwipeIndicatorChange,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+
+            // ─────────────── 画面 ───────────────
+            item { SettingsGroupHeader("画面") }
+
             // 画面の向き設定（縦/横/画面に合わせる）
-            OrientationSelector(modifier = Modifier.fillMaxWidth())
+            item { OrientationSelector(modifier = Modifier.fillMaxWidth()) }
+
+            // ─────────────── カーソル ───────────────
+            item { SettingsGroupHeader("カーソル") }
 
             // カーソル感度設定
-            SliderSetting(
-                title = "カーソル感度",
-                value = sensitivity,
-                onValueChange = onSensitivityChange,
-                valueRange = SensitivityPref.MIN..SensitivityPref.MAX,
-                modifier = Modifier.fillMaxWidth()
-            )
+            item {
+                SliderSetting(
+                    title = "カーソル感度",
+                    value = sensitivity,
+                    onValueChange = onSensitivityChange,
+                    valueRange = SensitivityPref.MIN..SensitivityPref.MAX,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+
+            // ─────────────── スクロール ───────────────
+            item { SettingsGroupHeader("スクロール") }
 
             // スクロール感度設定
-            SliderSetting(
-                title = "スクロール感度",
-                value = scrollSensitivity,
-                onValueChange = onScrollSensitivityChange,
-                valueRange = ScrollSensitivityPref.MIN..ScrollSensitivityPref.MAX,
-                modifier = Modifier.fillMaxWidth()
-            )
+            item {
+                SliderSetting(
+                    title = "スクロール感度",
+                    value = scrollSensitivity,
+                    onValueChange = onScrollSensitivityChange,
+                    valueRange = ScrollSensitivityPref.MIN..ScrollSensitivityPref.MAX,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
 
             // スクロール方向トグル
-            NaturalScrollToggle(
-                naturalScroll = naturalScroll,
-                onNaturalScrollChange = onNaturalScrollChange,
-                modifier = Modifier.fillMaxWidth()
-            )
-
-            // 慣性スクロールトグル
-            InertialScrollToggle(
-                enabled = inertialScroll,
-                onEnabledChange = onInertialScrollChange,
-                modifier = Modifier.fillMaxWidth()
-            )
+            item {
+                NaturalScrollToggle(
+                    naturalScroll = naturalScroll,
+                    onNaturalScrollChange = onNaturalScrollChange,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
 
             // 摩擦係数（慣性が止まるまでの早さ）
             // 値は「速度乗数」: 高いほど減衰小さく長く滑る、低いほど早く止まる
-            SliderSetting(
-                title = "慣性: 摩擦係数",
-                value = inertialFriction,
-                onValueChange = onInertialFrictionChange,
-                valueRange = InertialFrictionPref.MIN..InertialFrictionPref.MAX,
-                valueLabel = { "%.2f".format(it) },
-                leftLabel = "すぐ止まる",
-                rightLabel = "長く滑る",
-                modifier = Modifier.fillMaxWidth()
-            )
+            item {
+                SliderSetting(
+                    title = "慣性: 摩擦係数",
+                    value = inertialFriction,
+                    onValueChange = onInertialFrictionChange,
+                    valueRange = InertialFrictionPref.MIN..InertialFrictionPref.MAX,
+                    valueLabel = { "%.2f".format(it) },
+                    leftLabel = "すぐ止まる",
+                    rightLabel = "長く滑る",
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
 
             // 停止閾値（残速度がこれ未満で慣性終了）
-            SliderSetting(
-                title = "慣性: 停止閾値",
-                value = inertialStopThreshold,
-                onValueChange = onInertialStopThresholdChange,
-                valueRange = InertialStopThresholdPref.MIN..InertialStopThresholdPref.MAX,
-                valueLabel = { "%.2f".format(it) },
-                leftLabel = "粘る",
-                rightLabel = "すぐ切る",
-                modifier = Modifier.fillMaxWidth()
-            )
+            item {
+                SliderSetting(
+                    title = "慣性: 停止閾値",
+                    value = inertialStopThreshold,
+                    onValueChange = onInertialStopThresholdChange,
+                    valueRange = InertialStopThresholdPref.MIN..InertialStopThresholdPref.MAX,
+                    valueLabel = { "%.2f".format(it) },
+                    leftLabel = "粘る",
+                    rightLabel = "すぐ切る",
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
 
             // フリック発火閾値（指離脱時の速度がこれ以上なら慣性発火）
-            SliderSetting(
-                title = "慣性: フリック判定速度",
-                value = inertialFlickThreshold,
-                onValueChange = onInertialFlickThresholdChange,
-                valueRange = InertialFlickThresholdPref.MIN..InertialFlickThresholdPref.MAX,
-                valueLabel = { "%.2f".format(it) },
-                leftLabel = "敏感",
-                rightLabel = "鈍感",
-                modifier = Modifier.fillMaxWidth()
-            )
+            item {
+                SliderSetting(
+                    title = "慣性: フリック判定速度",
+                    value = inertialFlickThreshold,
+                    onValueChange = onInertialFlickThresholdChange,
+                    valueRange = InertialFlickThresholdPref.MIN..InertialFlickThresholdPref.MAX,
+                    valueLabel = { "%.2f".format(it) },
+                    leftLabel = "敏感",
+                    rightLabel = "鈍感",
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
 
-            // フリック・スタッキング (慣性中に再フリックで速度加算)
-            InertialStackingToggle(
-                enabled = inertialStacking,
-                onEnabledChange = onInertialStackingChange,
-                modifier = Modifier.fillMaxWidth()
-            )
-
-            // ピンチズーム ON/OFF
-            PinchZoomToggle(
-                enabled = pinchZoom,
-                onEnabledChange = onPinchZoomChange,
-                modifier = Modifier.fillMaxWidth()
-            )
+            // ─────────────── ピンチズーム ───────────────
+            item { SettingsGroupHeader("ピンチズーム") }
 
             // ピンチ感度
-            SliderSetting(
-                title = "ピンチ感度",
-                value = pinchSensitivity,
-                onValueChange = onPinchSensitivityChange,
-                valueRange = PinchSensitivityPref.MIN..PinchSensitivityPref.MAX,
-                modifier = Modifier.fillMaxWidth()
-            )
+            item {
+                SliderSetting(
+                    title = "ピンチ感度",
+                    value = pinchSensitivity,
+                    onValueChange = onPinchSensitivityChange,
+                    valueRange = PinchSensitivityPref.MIN..PinchSensitivityPref.MAX,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
 
             // ピンチ判定しきい値 (小さいほど発火しやすい)
-            SliderSetting(
-                title = "ピンチ判定しきい値",
-                value = pinchSlopDp,
-                onValueChange = onPinchSlopDpChange,
-                valueRange = PinchSlopPref.MIN..PinchSlopPref.MAX,
-                valueLabel = { "${it.toInt()}dp" },
-                leftLabel = "敏感",
-                rightLabel = "鈍感",
-                modifier = Modifier.fillMaxWidth()
-            )
+            item {
+                SliderSetting(
+                    title = "ピンチ判定しきい値",
+                    value = pinchSlopDp,
+                    onValueChange = onPinchSlopDpChange,
+                    valueRange = PinchSlopPref.MIN..PinchSlopPref.MAX,
+                    valueLabel = { "${it.toInt()}dp" },
+                    leftLabel = "敏感",
+                    rightLabel = "鈍感",
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
 
-            // ピンチ中の線表示 ON/OFF
-            PinchLineToggle(
-                enabled = pinchLine,
-                onEnabledChange = onPinchLineChange,
-                modifier = Modifier.fillMaxWidth()
-            )
+            // ─────────────── 4本指スワイプ ───────────────
+            item { SettingsGroupHeader("4本指スワイプ") }
 
-            // 3本指スワイプで戻る/進む
-            ThreeFingerSwipeToggle(
-                enabled = threeFingerSwipe,
-                onEnabledChange = onThreeFingerSwipeChange,
-                modifier = Modifier.fillMaxWidth()
-            )
+            // 4本指スワイプ発火しきい値
+            item {
+                SliderSetting(
+                    title = "4本指スワイプしきい値",
+                    value = fourFingerSwipeThresholdDp,
+                    onValueChange = onFourFingerSwipeThresholdDpChange,
+                    valueRange = FourFingerSwipeThresholdPref.MIN..FourFingerSwipeThresholdPref.MAX,
+                    valueLabel = { "${it.toInt()}dp" },
+                    leftLabel = "敏感",
+                    rightLabel = "鈍感",
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
 
-            // 3本指スワイプ発火しきい値
-            SliderSetting(
-                title = "3本指スワイプしきい値",
-                value = threeFingerSwipeThresholdDp,
-                onValueChange = onThreeFingerSwipeThresholdDpChange,
-                valueRange = ThreeFingerSwipeThresholdPref.MIN..ThreeFingerSwipeThresholdPref.MAX,
-                valueLabel = { "${it.toInt()}dp" },
-                leftLabel = "敏感",
-                rightLabel = "鈍感",
-                modifier = Modifier.fillMaxWidth()
-            )
-
-            // 3本指スワイプの予兆カーテン+矢印 表示 ON/OFF
-            ThreeFingerSwipeIndicatorToggle(
-                enabled = threeFingerSwipeIndicator,
-                onEnabledChange = onThreeFingerSwipeIndicatorChange,
-                modifier = Modifier.fillMaxWidth()
-            )
-
-            // 指のタッチ位置ドット ON/OFF
-            PointerDotsToggle(
-                enabled = pointerDots,
-                onEnabledChange = onPointerDotsChange,
-                modifier = Modifier.fillMaxWidth()
-            )
+            // ─────────────── タップ・ドラッグ判定 ───────────────
+            item { SettingsGroupHeader("タップ・ドラッグ判定") }
 
             // タップ判定の最大押下時間
-            SliderSetting(
-                title = "タップ判定時間",
-                value = tapTimeoutMs,
-                onValueChange = onTapTimeoutMsChange,
-                valueRange = TapTimeoutPref.MIN..TapTimeoutPref.MAX,
-                valueLabel = { "${it.toInt()}ms" },
-                leftLabel = "短い",
-                rightLabel = "長い",
-                modifier = Modifier.fillMaxWidth()
-            )
+            item {
+                SliderSetting(
+                    title = "タップ判定時間",
+                    value = tapTimeoutMs,
+                    onValueChange = onTapTimeoutMsChange,
+                    valueRange = TapTimeoutPref.MIN..TapTimeoutPref.MAX,
+                    valueLabel = { "${it.toInt()}ms" },
+                    leftLabel = "短い",
+                    rightLabel = "長い",
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
 
             // タップ判定の移動許容
-            SliderSetting(
-                title = "タップ移動許容",
-                value = tapSlopDp,
-                onValueChange = onTapSlopDpChange,
-                valueRange = TapSlopPref.MIN..TapSlopPref.MAX,
-                valueLabel = { "${it.toInt()}dp" },
-                leftLabel = "厳しい",
-                rightLabel = "ゆるい",
-                modifier = Modifier.fillMaxWidth()
-            )
+            item {
+                SliderSetting(
+                    title = "タップ移動許容",
+                    value = tapSlopDp,
+                    onValueChange = onTapSlopDpChange,
+                    valueRange = TapSlopPref.MIN..TapSlopPref.MAX,
+                    valueLabel = { "${it.toInt()}dp" },
+                    leftLabel = "厳しい",
+                    rightLabel = "ゆるい",
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
 
             // ダブルタップ判定の最大間隔
-            SliderSetting(
-                title = "ダブルタップ間隔",
-                value = doubleTapIntervalMs,
-                onValueChange = onDoubleTapIntervalMsChange,
-                valueRange = DoubleTapIntervalPref.MIN..DoubleTapIntervalPref.MAX,
-                valueLabel = { "${it.toInt()}ms" },
-                leftLabel = "短い",
-                rightLabel = "長い",
-                modifier = Modifier.fillMaxWidth()
-            )
-
-            // メニュー起動の長押し時間
-            SliderSetting(
-                title = "メニュー長押し時間",
-                value = menuHoldDurationMs,
-                onValueChange = onMenuHoldDurationMsChange,
-                valueRange = MenuHoldDurationPref.MIN..MenuHoldDurationPref.MAX,
-                valueLabel = { "${it.toInt()}ms" },
-                leftLabel = "短い",
-                rightLabel = "長い",
-                modifier = Modifier.fillMaxWidth()
-            )
+            item {
+                SliderSetting(
+                    title = "ダブルタップ間隔",
+                    value = doubleTapIntervalMs,
+                    onValueChange = onDoubleTapIntervalMsChange,
+                    valueRange = DoubleTapIntervalPref.MIN..DoubleTapIntervalPref.MAX,
+                    valueLabel = { "${it.toInt()}ms" },
+                    leftLabel = "短い",
+                    rightLabel = "長い",
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
 
             // クリック押下保持時間
-            SliderSetting(
-                title = "クリック押下保持",
-                value = clickHoldMs,
-                onValueChange = onClickHoldMsChange,
-                valueRange = ClickHoldPref.MIN..ClickHoldPref.MAX,
-                valueLabel = { "${it.toInt()}ms" },
-                leftLabel = "短い",
-                rightLabel = "長い",
-                modifier = Modifier.fillMaxWidth()
-            )
-
-            // Discoverable 持続時間
-            SliderSetting(
-                title = "ペアリング許可時間",
-                value = discoverableSec,
-                onValueChange = onDiscoverableSecChange,
-                valueRange = DiscoverableDurationPref.MIN..DiscoverableDurationPref.MAX,
-                valueLabel = {
-                    val sec = it.toInt()
-                    if (sec >= 60) "${sec / 60}分" else "${sec}秒"
-                },
-                leftLabel = "短い",
-                rightLabel = "長い",
-                modifier = Modifier.fillMaxWidth()
-            )
-
-            // ログ画面への遷移ボタン
-            Button(
-                onClick = onOpenLogs,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(8.dp)
-            ) {
-                Text("ログを見る")
+            item {
+                SliderSetting(
+                    title = "クリック押下保持",
+                    value = clickHoldMs,
+                    onValueChange = onClickHoldMsChange,
+                    valueRange = ClickHoldPref.MIN..ClickHoldPref.MAX,
+                    valueLabel = { "${it.toInt()}ms" },
+                    leftLabel = "短い",
+                    rightLabel = "長い",
+                    modifier = Modifier.fillMaxWidth()
+                )
             }
+
+            // ─────────────── その他 ───────────────
+            item { SettingsGroupHeader("その他") }
+
+            // メニュー起動の長押し時間
+            item {
+                SliderSetting(
+                    title = "メニュー長押し時間",
+                    value = menuHoldDurationMs,
+                    onValueChange = onMenuHoldDurationMsChange,
+                    valueRange = MenuHoldDurationPref.MIN..MenuHoldDurationPref.MAX,
+                    valueLabel = { "${it.toInt()}ms" },
+                    leftLabel = "短い",
+                    rightLabel = "長い",
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+
         }
     }
 }
 
 /**
- * 3本指スワイプの予兆表示（カーテン + 中央三角）の ON/OFF トグル。
+ * 4本指スワイプの予兆表示（カーテン + 中央三角）の ON/OFF トグル。
  *
  * @param enabled         現在の状態
  * @param onEnabledChange 状態変化時に呼ばれる
  * @param modifier        配置調整用 Modifier
  */
 @Composable
-fun ThreeFingerSwipeIndicatorToggle(
+fun FourFingerSwipeIndicatorToggle(
     enabled: Boolean,
     onEnabledChange: (Boolean) -> Unit,
     modifier: Modifier = Modifier
@@ -909,7 +1024,7 @@ fun ThreeFingerSwipeIndicatorToggle(
         verticalAlignment = Alignment.CenterVertically
     ) {
         Column(modifier = Modifier.weight(1f)) {
-            Text(text = "3本指スワイプの予兆表示", color = Color.White)
+            Text(text = "4本指スワイプの予兆表示", color = Color.White)
             Text(
                 text = "進捗をカーテンで、閾値到達を中央の三角で示す",
                 color = Color(0xFF888888),
@@ -920,6 +1035,123 @@ fun ThreeFingerSwipeIndicatorToggle(
             checked = enabled,
             onCheckedChange = onEnabledChange
         )
+    }
+}
+
+/**
+ * 1本指タップで左クリックを送る機能の ON/OFF トグル。
+ */
+@Composable
+fun LeftClickToggle(
+    enabled: Boolean,
+    onEnabledChange: (Boolean) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .clickable { onEnabledChange(!enabled) }
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(text = "1本指タップで左クリック", color = Color.White)
+            Text(
+                text = "OFF にするとタップしても何も起きない",
+                color = Color(0xFF888888),
+                fontSize = 12.sp
+            )
+        }
+        Switch(checked = enabled, onCheckedChange = onEnabledChange)
+    }
+}
+
+/**
+ * 2本指タップで右クリックを送る機能の ON/OFF トグル。
+ */
+@Composable
+fun RightClickToggle(
+    enabled: Boolean,
+    onEnabledChange: (Boolean) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .clickable { onEnabledChange(!enabled) }
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(text = "2本指タップで右クリック", color = Color.White)
+            Text(
+                text = "OFF にすると 2本指タップしても何も起きない",
+                color = Color(0xFF888888),
+                fontSize = 12.sp
+            )
+        }
+        Switch(checked = enabled, onCheckedChange = onEnabledChange)
+    }
+}
+
+/**
+ * ダブルタップ→ドラッグ機能の ON/OFF トグル。
+ */
+@Composable
+fun DragToggle(
+    enabled: Boolean,
+    onEnabledChange: (Boolean) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .clickable { onEnabledChange(!enabled) }
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(text = "ダブルタップ→ドラッグ", color = Color.White)
+            Text(
+                text = "OFF にすると範囲選択・ドラッグ&ドロップが動かない",
+                color = Color(0xFF888888),
+                fontSize = 12.sp
+            )
+        }
+        Switch(checked = enabled, onCheckedChange = onEnabledChange)
+    }
+}
+
+/**
+ * 2本指スクロール機能の ON/OFF トグル。
+ * 慣性スクロールやスタッキングはこれが OFF だと一緒に動かない。
+ */
+@Composable
+fun ScrollToggle(
+    enabled: Boolean,
+    onEnabledChange: (Boolean) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .clickable { onEnabledChange(!enabled) }
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(text = "2本指スクロール", color = Color.White)
+            Text(
+                text = "OFF にすると 2本指で上下/左右ドラッグしてもスクロールしない",
+                color = Color(0xFF888888),
+                fontSize = 12.sp
+            )
+        }
+        Switch(checked = enabled, onCheckedChange = onEnabledChange)
     }
 }
 
@@ -960,14 +1192,14 @@ fun PointerDotsToggle(
 }
 
 /**
- * 3本指の左右スワイプを「戻る / 進む」(Alt+←/→) として送るトグル。
+ * 4本指の左右スワイプを「戻る / 進む」(Alt+←/→) として送るトグル。
  *
  * @param enabled         現在の状態
  * @param onEnabledChange 状態変化時に呼ばれる
  * @param modifier        配置調整用 Modifier
  */
 @Composable
-fun ThreeFingerSwipeToggle(
+fun FourFingerSwipeToggle(
     enabled: Boolean,
     onEnabledChange: (Boolean) -> Unit,
     modifier: Modifier = Modifier
@@ -981,7 +1213,7 @@ fun ThreeFingerSwipeToggle(
         verticalAlignment = Alignment.CenterVertically
     ) {
         Column(modifier = Modifier.weight(1f)) {
-            Text(text = "3本指スワイプで戻る/進む", color = Color.White)
+            Text(text = "4本指スワイプで戻る/進む", color = Color.White)
             Text(
                 text = "左へスワイプ=Alt+← / 右へスワイプ=Alt+→",
                 color = Color(0xFF888888),
@@ -1354,16 +1586,25 @@ fun TopBar(title: String, onBack: () -> Unit) {
  *   - リング満タン (= 指定時間ホールド完了) で [onActivate] が呼ばれる
  *   - 途中で指を離すとリングは消えてキャンセル扱い
  *
+ * 追加で、3回連続の素早いタップ (= 3-tap) を [onTripleTap] として通知する。
+ * これで「長押し → 設定」「3連タップ → 隠しメニュー」のような副ジェスチャーを 1 つのボタンに同居できる。
+ *
  * ゲームの「長押しで確認」UI 風の挙動。誤タップで切り替わらないのでトラックパッド操作と干渉しにくい。
  *
  * @param onActivate     長押し成功時のコールバック
+ * @param onTripleTap    3回連続タップが成立したときのコールバック (null なら 3-tap は無視)
  * @param holdDurationMs 長押し完了とみなすまでの時間 (ms)
+ * @param tapMaxMs       「タップ」とみなす最大押下時間 (ms)。これ以上長く押すとタップ扱いせず連打カウンタはリセットされる。
+ * @param tapWindowMs    連続タップとみなす最大間隔 (ms)。前回タップからこれ以内に次のタップが来ないとカウンタは 1 に戻る。
  * @param modifier       配置調整用 Modifier
  */
 @Composable
 fun HoldToToggleButton(
     onActivate: () -> Unit,
+    onTripleTap: (() -> Unit)? = null,
     holdDurationMs: Long = 750L,
+    tapMaxMs: Long = 200L,
+    tapWindowMs: Long = 400L,
     modifier: Modifier = Modifier
 ) {
 
@@ -1371,6 +1612,12 @@ fun HoldToToggleButton(
     var isPressed by remember { mutableStateOf(false) }
     // 進捗 0.0..1.0。Canvas のリング描画に使う。
     var progress by remember { mutableStateOf(0f) }
+
+    // 連続タップのカウンタ。タップが成立するたびに加算し、tapWindowMs を超えたら 1 にリセット。
+    // 3 に到達したら onTripleTap を呼んで 0 に戻す。
+    // remember しているので Trackpad 画面が再表示されるたびに 0 から始まる。
+    var tapCount by remember { mutableStateOf(0) }
+    var lastTapTime by remember { mutableStateOf(0L) }
 
     // 押下中だけアニメーションループを走らせる。
     // LaunchedEffect の key を isPressed にすることで、押下開始/離脱ごとにループの開始/終了が起きる。
@@ -1403,10 +1650,31 @@ fun HoldToToggleButton(
                 awaitEachGesture {
                     // 指が触れるまで待つ
                     awaitFirstDown(requireUnconsumed = false)
+                    val downTime = System.currentTimeMillis()
                     isPressed = true
                     // 指が離れる or キャンセルされるまで待つ
                     waitForUpOrCancellation()
                     isPressed = false
+
+                    // ─── 3連タップ判定 ───
+                    // 押下時間が tapMaxMs 以下なら「タップ」とみなしてカウンタを進める。
+                    // それより長い (= 長押し or 中途半端な保持) なら連打を中断扱いにしてリセット。
+                    val pressDuration = System.currentTimeMillis() - downTime
+                    if (onTripleTap != null) {
+                        if (pressDuration <= tapMaxMs) {
+                            val now = System.currentTimeMillis()
+                            // 前回タップから tapWindowMs を超えていれば連打は途切れているので 1 から
+                            tapCount = if (now - lastTapTime > tapWindowMs) 1 else tapCount + 1
+                            lastTapTime = now
+                            if (tapCount >= 3) {
+                                tapCount = 0
+                                onTripleTap()
+                            }
+                        } else {
+                            // 長めの押下 (長押し含む) は連打を中断したと判断
+                            tapCount = 0
+                        }
+                    }
                 }
             }
     ) {
@@ -1707,8 +1975,8 @@ private fun HidState.toDisplayText(): String = when (this) {
  * @param onPinchStart   2本指ピンチの開始時に呼ばれる。Ctrl 押下を送る想定。
  * @param onPinchZoom    ピンチ中の距離変化を tick 単位で通知 (正値=広げる=ズームイン)。Ctrl+wheel に変換する想定。
  * @param onPinchEnd     ピンチ終了時に呼ばれる。Ctrl リリースを送る想定。
- * @param onThreeFingerSwipeLeft  3本指で左方向へスワイプ後、指を離した時。「戻る」(Alt+←) を送る想定。
- * @param onThreeFingerSwipeRight 3本指で右方向へスワイプ後、指を離した時。「進む」(Alt+→) を送る想定。
+ * @param onFourFingerSwipeLeft  4本指で左方向へスワイプ後、指を離した時。「戻る」(Alt+←) を送る想定。
+ * @param onFourFingerSwipeRight 4本指で右方向へスワイプ後、指を離した時。「進む」(Alt+→) を送る想定。
  */
 @Composable
 fun TrackpadSurface(
@@ -1725,10 +1993,14 @@ fun TrackpadSurface(
     pinchSensitivity: Float = 1.0f,
     pinchSlopDp: Float = 15f,
     pinchLine: Boolean = true,
-    threeFingerSwipe: Boolean = true,
-    threeFingerSwipeThresholdDp: Float = 80f,
-    threeFingerSwipeIndicator: Boolean = true,
+    fourFingerSwipe: Boolean = true,
+    fourFingerSwipeThresholdDp: Float = 80f,
+    fourFingerSwipeIndicator: Boolean = true,
     pointerDots: Boolean = true,
+    leftClickEnabled: Boolean = true,
+    rightClickEnabled: Boolean = true,
+    dragEnabled: Boolean = true,
+    scrollEnabled: Boolean = true,
     tapTimeoutMs: Float = 250f,
     tapSlopDp: Float = 16f,
     doubleTapIntervalMs: Float = 300f,
@@ -1742,8 +2014,8 @@ fun TrackpadSurface(
     onPinchStart: () -> Unit = {},
     onPinchZoom: (ticks: Int) -> Unit = {},
     onPinchEnd: () -> Unit = {},
-    onThreeFingerSwipeLeft: () -> Unit = {},
-    onThreeFingerSwipeRight: () -> Unit = {}
+    onFourFingerSwipeLeft: () -> Unit = {},
+    onFourFingerSwipeRight: () -> Unit = {}
 ) {
     // 現在押されている指の状態を保持する。
     //   キー  : PointerId.value（OS が各指に振る一意な ID。指が離れる→再度触ると新しい ID になる）
@@ -1754,11 +2026,11 @@ fun TrackpadSurface(
     // ピンチモード中フラグ。pointerInput 内で更新され、Canvas が読んで線を描画する。
     var pinchActive by remember { mutableStateOf(false) }
 
-    // 3本指スワイプ予兆表示用。pointerInput 内で更新され、Canvas が読んで矢印を描画する。
+    // 4本指スワイプ予兆表示用。pointerInput 内で更新され、Canvas が読んで矢印を描画する。
     // direction: -1 = 左 (戻る)、0 = 表示なし、+1 = 右 (進む)
     // progress : 0.0 = 開始位置、1.0 = 閾値到達、それ以上も許容
-    var threeFingerSwipeDirection by remember { mutableStateOf(0) }
-    var threeFingerSwipeProgress by remember { mutableStateOf(0f) }
+    var fourFingerSwipeDirection by remember { mutableStateOf(0) }
+    var fourFingerSwipeProgress by remember { mutableStateOf(0f) }
 
     // 慣性スクロール (フリック後の自動継続) を起動・キャンセルするためのスコープと Job 保持。
     // remember で Composable の生存期間にバインドされる。
@@ -1860,15 +2132,24 @@ fun TrackpadSurface(
                 var pinchReferenceDistance = 0f  // 直前フレームの2本指間距離
                 var pinchResidual = 0f           // tick 換算前の累積距離変化
 
-                // ─── 3本指スワイプ用の状態 ───
-                // 3本指が触れた瞬間の重心を記録、ジェスチャー終了時に重心の総移動量で
+                // ─── 4本指スワイプ用の状態 ───
+                // 4本指が触れた瞬間の重心を記録、ジェスチャー終了時に重心の総移動量で
                 // 左右スワイプを判定。
-                val threeFingerSwipeThresholdPx = threeFingerSwipeThresholdDp.dp.toPx()
-                var threeFingerActive = false
-                var threeFingerStartX = 0f
-                var threeFingerStartY = 0f
-                var threeFingerEndX = 0f
-                var threeFingerEndY = 0f
+                val fourFingerSwipeThresholdPx = fourFingerSwipeThresholdDp.dp.toPx()
+                var fourFingerActive = false
+                var fourFingerStartX = 0f
+                var fourFingerStartY = 0f
+                var fourFingerEndX = 0f
+                var fourFingerEndY = 0f
+
+                // ─── 性能計測 (temporary instrumentation) ───
+                // 1 イベントの処理にどれだけ時間がかかっているかを 60 イベント単位で集計し、
+                // 平均・最大・historical 平均サイズをログに出す。「もっさり」の原因切り分け用。
+                // 不要になったらこの 4 変数とループ末尾の集計ブロックを削除すること。
+                var perfEventCount = 0
+                var perfTotalNs = 0L
+                var perfMaxNs = 0L
+                var perfTotalHistorical = 0
 
                 // awaitPointerEventScope の中では「次のイベントが来るまで待つ」という
                 // サスペンド関数 awaitPointerEvent() が使える。
@@ -1877,6 +2158,8 @@ fun TrackpadSurface(
                     // コンポーザブルが破棄されるとこのコルーチン自体がキャンセルされて止まる。
                     while (true) {
                         val event = awaitPointerEvent()
+                        // 計測: 1 イベント処理の開始時刻 (性能計測用、不要になったら削除)
+                        val perfStartNs = System.nanoTime()
                         // event.changes には「このフレームで変化があったすべての指」の情報が入っている。
                         // - pressed == true  : 今この瞬間に画面に触れている指
                         // - pressed == false : 直前まで触れていて、今離れた指
@@ -1924,8 +2207,10 @@ fun TrackpadSurface(
                                     // 直前のタップ完了から短時間以内であれば、このジェスチャーは
                                     // ドラッグ移行の候補 (dragArmed)。一度使った "腕" は消費して
                                     // 同じ previousTapEndTime で複数ジェスチャーが乗らないようにする。
+                                    // dragEnabled が false の場合は最初から武装しない (= ドラッグ移行を防ぐ)。
                                     val sinceLastTap = change.uptimeMillis - previousTapEndTime
-                                    dragArmed = previousTapEndTime > 0L &&
+                                    dragArmed = dragEnabled &&
+                                            previousTapEndTime > 0L &&
                                             sinceLastTap < doubleTapMaxIntervalMsLong
                                     if (dragArmed) {
                                         previousTapEndTime = 0L
@@ -2012,37 +2297,39 @@ fun TrackpadSurface(
                             // それ以外（マルチタッチ中など）はマウス移動として扱わない
                         }
 
-                        // ─── 3本指スワイプの重心トラッキング ───
-                        // pressed.size == 3 になった瞬間の重心を記録し、3本指の間は重心を更新し続ける。
+                        // ─── 4本指スワイプの重心トラッキング ───
+                        // pressed.size == 4 になった瞬間の重心を記録し、4本指の間は重心を更新し続ける。
                         // ジェスチャー終了時に「総移動量」を見て左右スワイプを判定する。
                         // 同時に Canvas 用の予兆表示状態 (direction / progress) を更新。
-                        if (pressed.size == 3) {
+                        if (pressed.size == 4) {
                             val cx =
-                                (pressed[0].position.x + pressed[1].position.x + pressed[2].position.x) / 3f
+                                (pressed[0].position.x + pressed[1].position.x +
+                                        pressed[2].position.x + pressed[3].position.x) / 4f
                             val cy =
-                                (pressed[0].position.y + pressed[1].position.y + pressed[2].position.y) / 3f
-                            if (!threeFingerActive) {
-                                threeFingerActive = true
-                                threeFingerStartX = cx
-                                threeFingerStartY = cy
+                                (pressed[0].position.y + pressed[1].position.y +
+                                        pressed[2].position.y + pressed[3].position.y) / 4f
+                            if (!fourFingerActive) {
+                                fourFingerActive = true
+                                fourFingerStartX = cx
+                                fourFingerStartY = cy
                             }
-                            threeFingerEndX = cx
-                            threeFingerEndY = cy
+                            fourFingerEndX = cx
+                            fourFingerEndY = cy
 
                             // 予兆表示の direction / progress を更新
-                            if (threeFingerSwipe) {
-                                val dx = threeFingerEndX - threeFingerStartX
-                                val dy = threeFingerEndY - threeFingerStartY
+                            if (fourFingerSwipe) {
+                                val dx = fourFingerEndX - fourFingerStartX
+                                val dy = fourFingerEndY - fourFingerStartY
                                 val absDx = kotlin.math.abs(dx)
                                 val absDy = kotlin.math.abs(dy)
                                 // 横移動が縦より支配的なときだけ矢印を出す
                                 if (absDx > absDy * 1.5f) {
-                                    threeFingerSwipeDirection = if (dx > 0) 1 else -1
-                                    threeFingerSwipeProgress =
-                                        absDx / threeFingerSwipeThresholdPx
+                                    fourFingerSwipeDirection = if (dx > 0) 1 else -1
+                                    fourFingerSwipeProgress =
+                                        absDx / fourFingerSwipeThresholdPx
                                 } else {
-                                    threeFingerSwipeDirection = 0
-                                    threeFingerSwipeProgress = 0f
+                                    fourFingerSwipeDirection = 0
+                                    fourFingerSwipeProgress = 0f
                                 }
                             }
                         }
@@ -2059,7 +2346,8 @@ fun TrackpadSurface(
                             val s2 = fingerStartPositions[c2.id.value]
 
                             // maxConcurrentFingers > 2 = 過去に3本以上触れた → 2本指モードは抑止
-                            // (3本指スワイプ用に予約。途中で 3→2 になっても scroll/pinch に流れ込まない)
+                            // (4本指スワイプ用に予約。指の出入りで 4→3→2 と一時的に2本になっても
+                            //  scroll/pinch に流れ込まない)
                             if (s1 != null && s2 != null && !scrollCommitted && !pinchCommitted &&
                                 maxConcurrentFingers <= 2) {
                                 // 距離変化 (ピンチ判定用)
@@ -2082,7 +2370,8 @@ fun TrackpadSurface(
                                     pinchResidual = 0f
                                     AppLog.d("ピンチモード開始 initialDist=${initialDist.toInt()} currentDist=${currentDist.toInt()}")
                                     onPinchStart()
-                                } else if (d1 > tapSlopPx || d2 > tapSlopPx) {
+                                } else if (scrollEnabled && (d1 > tapSlopPx || d2 > tapSlopPx)) {
+                                    // scrollEnabled が false ならスクロールに移行しない (= 2本指右クリック判定のままにする)
                                     scrollCommitted = true
                                     gestureCancelled = true
                                     AppLog.d("スクロールモード開始")
@@ -2195,21 +2484,21 @@ fun TrackpadSurface(
                                 onPinchEnd()
                             }
 
-                            // ─── 3本指スワイプ判定 ───
-                            // 3本指が同時に触れた経緯があり、設定が ON、最大同時押下数 == 3 (4本以上なら無効) の時、
+                            // ─── 4本指スワイプ判定 ───
+                            // 4本指が同時に触れた経緯があり、設定が ON、最大同時押下数 == 4 (5本以上なら無効) の時、
                             // 重心の総移動量を見て左右スワイプを判定。横移動が縦より十分支配的なら発火。
-                            if (threeFingerSwipe && threeFingerActive && maxConcurrentFingers == 3) {
-                                val totalDx = threeFingerEndX - threeFingerStartX
-                                val totalDy = threeFingerEndY - threeFingerStartY
+                            if (fourFingerSwipe && fourFingerActive && maxConcurrentFingers == 4) {
+                                val totalDx = fourFingerEndX - fourFingerStartX
+                                val totalDy = fourFingerEndY - fourFingerStartY
                                 val absDx = kotlin.math.abs(totalDx)
                                 val absDy = kotlin.math.abs(totalDy)
-                                if (absDx > threeFingerSwipeThresholdPx && absDx > absDy * 1.5f) {
+                                if (absDx > fourFingerSwipeThresholdPx && absDx > absDy * 1.5f) {
                                     if (totalDx > 0) {
-                                        AppLog.d("3本指スワイプ: 右 → 進む")
-                                        onThreeFingerSwipeRight()
+                                        AppLog.d("4本指スワイプ: 右 → 進む")
+                                        onFourFingerSwipeRight()
                                     } else {
-                                        AppLog.d("3本指スワイプ: 左 → 戻る")
-                                        onThreeFingerSwipeLeft()
+                                        AppLog.d("4本指スワイプ: 左 → 戻る")
+                                        onFourFingerSwipeLeft()
                                     }
                                 }
                             }
@@ -2217,14 +2506,18 @@ fun TrackpadSurface(
                             if (!gestureCancelled && duration < tapTimeoutMsLong) {
                                 when (maxConcurrentFingers) {
                                     1 -> {
-                                        AppLog.d("1本指タップ検出: duration=${duration}ms")
-                                        onTap()
-                                        // 次のジェスチャーが dragArmed になれるよう、タップ完了時刻を記録
-                                        previousTapEndTime = endTime
+                                        if (leftClickEnabled) {
+                                            AppLog.d("1本指タップ検出: duration=${duration}ms")
+                                            onTap()
+                                            // 次のジェスチャーが dragArmed になれるよう、タップ完了時刻を記録
+                                            previousTapEndTime = endTime
+                                        }
                                     }
                                     2 -> {
-                                        AppLog.d("2本指タップ検出: duration=${duration}ms")
-                                        onTwoFingerTap()
+                                        if (rightClickEnabled) {
+                                            AppLog.d("2本指タップ検出: duration=${duration}ms")
+                                            onTwoFingerTap()
+                                        }
                                     }
                                     // 3本以上は今は何もしない
                                 }
@@ -2281,15 +2574,36 @@ fun TrackpadSurface(
                             pinchActive = false  // 線を消す
                             pinchReferenceDistance = 0f
                             pinchResidual = 0f
-                            // 3本指トラッキング状態のリセット
-                            threeFingerActive = false
-                            threeFingerStartX = 0f
-                            threeFingerStartY = 0f
-                            threeFingerEndX = 0f
-                            threeFingerEndY = 0f
+                            // 4本指トラッキング状態のリセット
+                            fourFingerActive = false
+                            fourFingerStartX = 0f
+                            fourFingerStartY = 0f
+                            fourFingerEndX = 0f
+                            fourFingerEndY = 0f
                             // 予兆表示も消す
-                            threeFingerSwipeDirection = 0
-                            threeFingerSwipeProgress = 0f
+                            fourFingerSwipeDirection = 0
+                            fourFingerSwipeProgress = 0f
+                        }
+
+                        // ─── 性能計測 (temporary instrumentation) ───
+                        // 1 イベント処理にかかった時間を蓄積し、60 イベントごとに 1 行ログを出す。
+                        // 平均 (avg)・最大 (max)・historical 平均サイズ。不要になったら削除。
+                        val perfElapsedNs = System.nanoTime() - perfStartNs
+                        perfEventCount++
+                        perfTotalNs += perfElapsedNs
+                        if (perfElapsedNs > perfMaxNs) perfMaxNs = perfElapsedNs
+                        event.changes.forEach { perfTotalHistorical += it.historical.size }
+                        if (perfEventCount >= 60) {
+                            AppLog.d(
+                                "perf: ev=$perfEventCount " +
+                                "avg=${perfTotalNs / perfEventCount / 1000}us " +
+                                "max=${perfMaxNs / 1000}us " +
+                                "histAvg=${perfTotalHistorical / perfEventCount}"
+                            )
+                            perfEventCount = 0
+                            perfTotalNs = 0L
+                            perfMaxNs = 0L
+                            perfTotalHistorical = 0
                         }
                     }
                 }
@@ -2388,20 +2702,20 @@ fun TrackpadSurface(
                 }
             }
 
-            // ─── 3本指スワイプの予兆 (カーテン + 中央三角) ───
+            // ─── 4本指スワイプの予兆 (カーテン + 中央三角) ───
             // スワイプ方向の端から薄いグレーのカーテンが侵入する。
             // 幅 = 進捗 (画面幅 × progress)。閾値到達で不透明度が上がって「届いた」を示す。
             // 中央には背景色と同じダーク三角を描く。カーテンに覆われると「ダーク三角がグレーから抜けた」
             // 形で現れて、進捗が直感的に分かる。
-            // threeFingerSwipeIndicator が OFF の場合はカーテン・三角ともに描画しない。
-            if (threeFingerSwipeIndicator && threeFingerSwipeDirection != 0) {
-                val progressClamped = threeFingerSwipeProgress.coerceIn(0f, 1f)
-                val direction = threeFingerSwipeDirection
+            // fourFingerSwipeIndicator が OFF の場合はカーテン・三角ともに描画しない。
+            if (fourFingerSwipeIndicator && fourFingerSwipeDirection != 0) {
+                val progressClamped = fourFingerSwipeProgress.coerceIn(0f, 1f)
+                val direction = fourFingerSwipeDirection
                 val w = size.width
                 val h = size.height
 
                 // カーテンの不透明度: 閾値前は控えめ、閾値到達で 100% に跳ね上がる
-                val curtainAlpha = if (threeFingerSwipeProgress >= 1f) 1f else 0.45f
+                val curtainAlpha = if (fourFingerSwipeProgress >= 1f) 1f else 0.45f
                 val curtainColor = Color(0xFFAAAAAA).copy(alpha = curtainAlpha)
                 val curtainWidth = w * progressClamped
 
@@ -2424,7 +2738,7 @@ fun TrackpadSurface(
                 // 中央の三角 (スワイプ方向を指す)。色はトラックパッド背景と同色。
                 // 閾値到達時のみ表示。進捗途中で半分だけ出る半端な見え方を避けて、
                 // 「届いた瞬間にバンと出る」確定的な表示にする。
-                if (threeFingerSwipeProgress >= 1f) {
+                if (fourFingerSwipeProgress >= 1f) {
                     val triangleWidth = 80.dp.toPx()
                     val triangleHeight = 64.dp.toPx()
                     val cx = w / 2f

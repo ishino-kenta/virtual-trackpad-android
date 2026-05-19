@@ -15,3 +15,6 @@
 .externalNativeBuild
 .cxx
 local.properties
+
+# 個人用の作業メモ・実装計画書。git では追わずローカルだけで管理する。
+/docs/
