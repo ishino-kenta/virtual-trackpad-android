@@ -1,14 +1,14 @@
-package com.example.virtualtrackpad
+package com.example.virtualtrackpad.prefs
 
 import android.content.Context
 
 /**
- * 慣性スクロール (フリック後に減衰しながらスクロールが続く挙動) の ON/OFF 設定。
- * デフォルトは ON。
+ * トラックパッド面に指のタッチ位置を示す円ドットを描画するかの設定。
+ * デバッグや視覚フィードバックに便利だが、シンプルな見た目にしたい時は OFF にできる。
  */
-object InertialScrollPref {
+object PointerDotsPref {
     private const val PREFS_NAME = "virtual_trackpad_prefs"
-    private const val KEY = "inertial_scroll"
+    private const val KEY = "pointer_dots"
     const val DEFAULT = true
 
     fun load(context: Context): Boolean =

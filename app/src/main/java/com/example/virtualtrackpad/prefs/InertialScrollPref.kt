@@ -1,14 +1,14 @@
-package com.example.virtualtrackpad
+package com.example.virtualtrackpad.prefs
 
 import android.content.Context
 
 /**
- * 3本指スワイプの予兆表示 (カーテン + 中央の三角) の ON/OFF。
- * OFF にするとジェスチャー自体は動くが、視覚フィードバックは出ない。
+ * 慣性スクロール (フリック後に減衰しながらスクロールが続く挙動) の ON/OFF 設定。
+ * デフォルトは ON。
  */
-object ThreeFingerSwipeIndicatorPref {
+object InertialScrollPref {
     private const val PREFS_NAME = "virtual_trackpad_prefs"
-    private const val KEY = "three_finger_swipe_indicator"
+    private const val KEY = "inertial_scroll"
     const val DEFAULT = true
 
     fun load(context: Context): Boolean =

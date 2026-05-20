@@ -1,14 +1,14 @@
-package com.example.virtualtrackpad
+package com.example.virtualtrackpad.prefs
 
 import android.content.Context
 
 /**
- * ピンチモード中に2本指間を線で結ぶ視覚表示の ON/OFF 設定。
- * ON にすると、ピンチ確定 (距離変化が slop 超え) 後、指を離すまで2点間に線が描画される。
+ * 2本指タップで右クリックを送る機能の ON/OFF。
+ * OFF にすると 2本指タップしても何も起きない (スクロール/ピンチは別途独立)。
  */
-object PinchLinePref {
+object RightClickPref {
     private const val PREFS_NAME = "virtual_trackpad_prefs"
-    private const val KEY = "pinch_line_visualization"
+    private const val KEY = "right_click_enabled"
     const val DEFAULT = true
 
     fun load(context: Context): Boolean =

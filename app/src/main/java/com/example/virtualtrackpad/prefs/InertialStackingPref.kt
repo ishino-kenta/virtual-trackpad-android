@@ -1,14 +1,16 @@
-package com.example.virtualtrackpad
+package com.example.virtualtrackpad.prefs
 
 import android.content.Context
 
 /**
- * 2本指タップで右クリックを送る機能の ON/OFF。
- * OFF にすると 2本指タップしても何も起きない (スクロール/ピンチは別途独立)。
+ * フリック・スタッキングの ON/OFF 設定。
+ * ON にすると慣性スクロール中に再度2本指フリックすると、残っている慣性速度に
+ * 新しいフリック速度が加算されて、より速くスクロールが続くようになる。
+ * （macOS / iOS のトラックパッド標準挙動）
  */
-object RightClickPref {
+object InertialStackingPref {
     private const val PREFS_NAME = "virtual_trackpad_prefs"
-    private const val KEY = "right_click_enabled"
+    private const val KEY = "inertial_stacking"
     const val DEFAULT = true
 
     fun load(context: Context): Boolean =

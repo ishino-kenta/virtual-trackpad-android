@@ -1,4 +1,4 @@
-package com.example.virtualtrackpad
+package com.example.virtualtrackpad.prefs
 
 import android.app.Activity
 import android.content.Context

@@ -1,16 +1,14 @@
-package com.example.virtualtrackpad
+package com.example.virtualtrackpad.prefs
 
 import android.content.Context
 
 /**
- * フリック・スタッキングの ON/OFF 設定。
- * ON にすると慣性スクロール中に再度2本指フリックすると、残っている慣性速度に
- * 新しいフリック速度が加算されて、より速くスクロールが続くようになる。
- * （macOS / iOS のトラックパッド標準挙動）
+ * ピンチモード中に2本指間を線で結ぶ視覚表示の ON/OFF 設定。
+ * ON にすると、ピンチ確定 (距離変化が slop 超え) 後、指を離すまで2点間に線が描画される。
  */
-object InertialStackingPref {
+object PinchLinePref {
     private const val PREFS_NAME = "virtual_trackpad_prefs"
-    private const val KEY = "inertial_stacking"
+    private const val KEY = "pinch_line_visualization"
     const val DEFAULT = true
 
     fun load(context: Context): Boolean =

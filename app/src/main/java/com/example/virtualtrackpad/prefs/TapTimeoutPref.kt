@@ -1,18 +1,16 @@
-package com.example.virtualtrackpad
+package com.example.virtualtrackpad.prefs
 
 import android.content.Context
 
 /**
- * 「ペアリングを許可」で端末を discoverable にする時間（秒）。
- * 短いと PC 側でペアリング操作している間に切れる可能性、長いと不要に発見可能のまま放置されるリスク。
- * 最大は Android の仕様上 3600 秒。
+ * タップ判定の最大押下時間（ミリ秒）。短いほどシビア（さっと押して離す）必要、長いほどゆるい。
  */
-object DiscoverableDurationPref {
+object TapTimeoutPref {
     private const val PREFS_NAME = "virtual_trackpad_prefs"
-    private const val KEY = "discoverable_duration_sec"
-    const val MIN = 60f
-    const val MAX = 3600f
-    const val DEFAULT = 300f
+    private const val KEY = "tap_timeout_ms"
+    const val MIN = 100f
+    const val MAX = 500f
+    const val DEFAULT = 250f
 
     fun load(context: Context): Float =
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)

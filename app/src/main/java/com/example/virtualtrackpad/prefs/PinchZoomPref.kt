@@ -1,14 +1,14 @@
-package com.example.virtualtrackpad
+package com.example.virtualtrackpad.prefs
 
 import android.content.Context
 
 /**
- * トラックパッド面に指のタッチ位置を示す円ドットを描画するかの設定。
- * デバッグや視覚フィードバックに便利だが、シンプルな見た目にしたい時は OFF にできる。
+ * ピンチズーム (2本指の距離変化を Ctrl+wheel に変換) の ON/OFF 設定。
+ * ON にすると、2本指で指を広げる/縮めると PC 側でズームイン/アウトする。
  */
-object PointerDotsPref {
+object PinchZoomPref {
     private const val PREFS_NAME = "virtual_trackpad_prefs"
-    private const val KEY = "pointer_dots"
+    private const val KEY = "pinch_zoom"
     const val DEFAULT = true
 
     fun load(context: Context): Boolean =

@@ -1,16 +1,17 @@
-package com.example.virtualtrackpad
+package com.example.virtualtrackpad.prefs
 
 import android.content.Context
 
 /**
- * ダブルタップ判定の最大間隔（ミリ秒）。
- * 1回目のタップ完了から2回目の押下開始までこの時間内であればドラッグ候補になる。
+ * 「ペアリングを許可」で端末を discoverable にする時間（秒）。
+ * 短いと PC 側でペアリング操作している間に切れる可能性、長いと不要に発見可能のまま放置されるリスク。
+ * 最大は Android の仕様上 3600 秒。
  */
-object DoubleTapIntervalPref {
+object DiscoverableDurationPref {
     private const val PREFS_NAME = "virtual_trackpad_prefs"
-    private const val KEY = "double_tap_interval_ms"
-    const val MIN = 150f
-    const val MAX = 600f
+    private const val KEY = "discoverable_duration_sec"
+    const val MIN = 60f
+    const val MAX = 3600f
     const val DEFAULT = 300f
 
     fun load(context: Context): Float =

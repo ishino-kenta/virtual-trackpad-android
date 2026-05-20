@@ -1,16 +1,17 @@
-package com.example.virtualtrackpad
+package com.example.virtualtrackpad.prefs
 
 import android.content.Context
 
 /**
- * タップ判定の最大押下時間（ミリ秒）。短いほどシビア（さっと押して離す）必要、長いほどゆるい。
+ * ダブルタップ判定の最大間隔（ミリ秒）。
+ * 1回目のタップ完了から2回目の押下開始までこの時間内であればドラッグ候補になる。
  */
-object TapTimeoutPref {
+object DoubleTapIntervalPref {
     private const val PREFS_NAME = "virtual_trackpad_prefs"
-    private const val KEY = "tap_timeout_ms"
-    const val MIN = 100f
-    const val MAX = 500f
-    const val DEFAULT = 250f
+    private const val KEY = "double_tap_interval_ms"
+    const val MIN = 150f
+    const val MAX = 600f
+    const val DEFAULT = 300f
 
     fun load(context: Context): Float =
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)

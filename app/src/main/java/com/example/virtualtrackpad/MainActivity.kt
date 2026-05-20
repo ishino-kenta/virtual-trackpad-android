@@ -5,7 +5,9 @@ import android.app.Activity
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.content.Intent
+import android.content.res.Configuration
 import android.os.Bundle
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -17,19 +19,23 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.RadioButton
@@ -45,22 +51,31 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.RoundRect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathFillType
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import com.example.virtualtrackpad.prefs.*
 import com.example.virtualtrackpad.ui.theme.VirtualTrackpadTheme
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -147,6 +162,9 @@ sealed class AppScreen {
 
     /** ログ画面：AppLog のエントリ一覧。トラックパッド画面の右上ドット3連タップで開く。 */
     object Logs : AppScreen()
+
+    /** 対象領域 (Active Area) の調整画面：4辺のドラッグハンドルで有効領域を設定する。 */
+    object ActiveAreaSettings : AppScreen()
 }
 
 /**
@@ -166,9 +184,31 @@ fun AppRoot(modifier: Modifier = Modifier) {
     val manager = remember { HidMouseManager(appContext) }
     // クリック・コルーチン起動用のスコープ。AppRoot の生存期間に紐づく。
     val scope = rememberCoroutineScope()
+    // ブラックアウト適用先となる Activity。LocalContext は Activity をラップしているはず。
+    val activity = LocalContext.current as? Activity
 
     // 現在表示している画面。デフォルトはトラックパッド。
     var screen: AppScreen by remember { mutableStateOf<AppScreen>(AppScreen.Trackpad) }
+
+    // 画面ブラックアウト中フラグ。4本指ダブルタップでトグル。
+    // in-memory のみ (永続化しない) — アプリ再起動時は常に通常輝度から始まる。
+    // 永続化すると「真っ暗で起動 → 脱出方法わからない」事故が起きるため。
+    var blackoutActive by remember { mutableStateOf(false) }
+
+    // blackoutActive が変わるたび、Activity の window 輝度を上書き / 解除する。
+    // - 0.0f: 端末で表示可能な最小輝度 (BRIGHTNESS_OVERRIDE_OFF)
+    // - BRIGHTNESS_OVERRIDE_NONE (-1.0f): OS の輝度設定に従う (= 通常)
+    // この上書きはアプリ表示中だけ効き、フォーカスを失えば OS が自動で戻すので権限不要。
+    LaunchedEffect(blackoutActive) {
+        val window = activity?.window ?: return@LaunchedEffect
+        val attrs = window.attributes
+        attrs.screenBrightness = if (blackoutActive) {
+            0.0f
+        } else {
+            WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+        }
+        window.attributes = attrs
+    }
 
     // カーソル感度。SharedPreferences の保存値で初期化し、設定画面のスライダーで更新する。
     // ここで保持することで、TrackpadView (=トラックパッド面) と SettingsScreen (=スライダー) が
@@ -231,25 +271,58 @@ fun AppRoot(modifier: Modifier = Modifier) {
     var dragEnabled by remember { mutableStateOf(DragPref.load(appContext)) }
     // 2本指スクロール機能の ON/OFF
     var scrollEnabled by remember { mutableStateOf(ScrollPref.load(appContext)) }
+    // 3本指ドラッグ機能の ON/OFF
+    var threeFingerDrag by remember { mutableStateOf(ThreeFingerDragPref.load(appContext)) }
+    // ダブルタップ→ドラッグ移行しきい値 (dp)
+    var dragCommitSlopDp by remember { mutableStateOf(DragCommitSlopPref.load(appContext)) }
+    // ドラッグ中の縁取り表示の ON/OFF
+    var dragBorder by remember { mutableStateOf(DragBorderPref.load(appContext)) }
+    // 4本指ダブルタップで画面ブラックアウトを切替するジェスチャの ON/OFF
+    var blackoutGesture by remember { mutableStateOf(BlackoutGesturePref.load(appContext)) }
+
+    // 現在の端末向き (横持ち / 縦持ち)。Configuration が変わると key が変わって state が読み直される。
+    // 対象領域 (active area) は向きごとに別管理なので、向き変化で適切な保存値を再ロードする。
+    val isLandscape =
+        LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+    // トラックパッド面の有効領域 (top/bottom/left/right、0..1 比率)。
+    // 向きが変わったら remember キーが変わって再ロードされる。
+    var activeArea by remember(isLandscape) {
+        mutableStateOf(ActiveAreaPref.load(appContext, isLandscape))
+    }
 
     DisposableEffect(Unit) {
         manager.start()
         onDispose { manager.stop() }
     }
 
+    // ブラックアウト中はシステムバック先取りで「ブラックアウト解除」に割り当てる。
+    // 真っ暗で 4本指ダブルタップを思い出せない事故からの脱出用フェイルセーフ。
+    // (この BackHandler を画面遷移用より「前」に書いて先に判定させる)
+    BackHandler(enabled = blackoutActive) {
+        blackoutActive = false
+    }
+
     // システムのバックジェスチャーで一つ前の画面に戻る。
     // 設定もログもトラックパッド画面から直接遷移する設計なので、戻り先は常にトラックパッド。
     // トラックパッド画面では BackHandler は無効化してデフォルト動作（アプリ終了）に任せる。
-    BackHandler(enabled = screen != AppScreen.Trackpad) {
+    BackHandler(enabled = screen != AppScreen.Trackpad && !blackoutActive) {
         screen = AppScreen.Trackpad
     }
 
-    when (screen) {
-        AppScreen.Trackpad -> TrackpadView(
-            manager = manager,
-            scope = scope,
-            onOpenMenu = { screen = AppScreen.Settings },
-            onOpenLogs = { screen = AppScreen.Logs },
+    Box(modifier = modifier) {
+        when (screen) {
+            AppScreen.Trackpad -> TrackpadView(
+                manager = manager,
+                scope = scope,
+                onOpenMenu = { screen = AppScreen.Settings },
+                onOpenLogs = { screen = AppScreen.Logs },
+                onToggleBlackout = {
+                    // BlackoutGesturePref が OFF のときは検出されてもトグルしない
+                    // (= ジェスチャ自体は走るが画面は変化しない)。
+                    if (blackoutGesture) {
+                        blackoutActive = !blackoutActive
+                    }
+                },
             sensitivity = sensitivity,
             scrollSensitivity = scrollSensitivity,
             naturalScroll = naturalScroll,
@@ -275,7 +348,11 @@ fun AppRoot(modifier: Modifier = Modifier) {
             rightClickEnabled = rightClickEnabled,
             dragEnabled = dragEnabled,
             scrollEnabled = scrollEnabled,
-            modifier = modifier
+            threeFingerDrag = threeFingerDrag,
+            dragCommitSlopDp = dragCommitSlopDp,
+            activeArea = activeArea,
+            dragBorder = dragBorder,
+            modifier = Modifier.fillMaxSize()
         )
         AppScreen.Settings -> SettingsScreen(
             manager = manager,
@@ -409,13 +486,62 @@ fun AppRoot(modifier: Modifier = Modifier) {
                 scrollEnabled = v
                 ScrollPref.save(appContext, v)
             },
+            threeFingerDrag = threeFingerDrag,
+            onThreeFingerDragChange = { v ->
+                threeFingerDrag = v
+                ThreeFingerDragPref.save(appContext, v)
+            },
+            dragCommitSlopDp = dragCommitSlopDp,
+            onDragCommitSlopDpChange = { v ->
+                dragCommitSlopDp = v
+                DragCommitSlopPref.save(appContext, v)
+            },
+            dragBorder = dragBorder,
+            onDragBorderChange = { v ->
+                dragBorder = v
+                DragBorderPref.save(appContext, v)
+            },
+            blackoutGesture = blackoutGesture,
+            onBlackoutGestureChange = { v ->
+                blackoutGesture = v
+                BlackoutGesturePref.save(appContext, v)
+            },
+            onOpenActiveAreaSettings = { screen = AppScreen.ActiveAreaSettings },
             onBack = { screen = AppScreen.Trackpad },
-            modifier = modifier
+            modifier = Modifier.fillMaxSize()
         )
         AppScreen.Logs -> LogsScreen(
             onBack = { screen = AppScreen.Trackpad },
-            modifier = modifier
+            modifier = Modifier.fillMaxSize()
         )
+        AppScreen.ActiveAreaSettings -> ActiveAreaScreen(
+            bounds = activeArea,
+            onBoundsChange = { newBounds ->
+                activeArea = newBounds
+                ActiveAreaPref.save(appContext, isLandscape, newBounds)
+            },
+            onReset = {
+                activeArea = ActiveAreaPref.Bounds.FULL
+                ActiveAreaPref.save(appContext, isLandscape, ActiveAreaPref.Bounds.FULL)
+            },
+            onBack = { screen = AppScreen.Settings },
+            modifier = Modifier.fillMaxSize()
+        )
+        }
+
+        // ─── ブラックアウト用の全画面黒オーバーレイ ───
+        // blackoutActive のとき、画面全体を真っ黒に塗りつぶす。
+        // pointerInput を持たないので、タッチイベントは下の TrackpadSurface に貫通する
+        // (= 真っ暗のままトラックパッドジェスチャーが効き続ける)。
+        // brightness 0 と組み合わせることで OLED は実質ピクセル消灯、LCD でも視認できない
+        // レベルまで落とせる。
+        if (blackoutActive) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black)
+            )
+        }
     }
 }
 
@@ -428,6 +554,7 @@ fun AppRoot(modifier: Modifier = Modifier) {
  * @param scope       タップ／右クリックの suspend 関数を起動するスコープ
  * @param onOpenMenu  右上の長押しが満タンになった時に呼ばれるコールバック（設定画面へ遷移）
  * @param onOpenLogs  右上を3連タップしたときに呼ばれるコールバック（ログ画面へ遷移）
+ * @param onToggleBlackout 4本指ダブルタップ時に呼ばれるコールバック（画面ブラックアウト ON/OFF トグル）
  * @param sensitivity         カーソル感度倍率（設定画面で変更可能）
  * @param scrollSensitivity   スクロール感度倍率（設定画面で変更可能）
  * @param naturalScroll       ナチュラルスクロール方向か（設定画面で変更可能）
@@ -453,6 +580,10 @@ fun AppRoot(modifier: Modifier = Modifier) {
  * @param rightClickEnabled             2本指タップで右クリック送信の ON/OFF
  * @param dragEnabled                   ダブルタップ→ドラッグの ON/OFF
  * @param scrollEnabled                 2本指スクロール (慣性含む) の ON/OFF
+ * @param threeFingerDrag               3本指ドラッグ (重心移動で左ボタン保持ドラッグ) の ON/OFF
+ * @param dragCommitSlopDp              ダブルタップ→ドラッグ移行しきい値 (dp)
+ * @param activeArea                    タッチを受け付ける対象領域 (4辺の 0..1 比率)
+ * @param dragBorder                    ドラッグ中の縁取り表示の ON/OFF
  * @param modifier              配置調整用 Modifier
  */
 @Composable
@@ -461,6 +592,7 @@ fun TrackpadView(
     scope: CoroutineScope,
     onOpenMenu: () -> Unit,
     onOpenLogs: () -> Unit,
+    onToggleBlackout: () -> Unit,
     sensitivity: Float,
     scrollSensitivity: Float,
     naturalScroll: Boolean,
@@ -486,6 +618,10 @@ fun TrackpadView(
     rightClickEnabled: Boolean,
     dragEnabled: Boolean,
     scrollEnabled: Boolean,
+    threeFingerDrag: Boolean,
+    dragCommitSlopDp: Float,
+    activeArea: ActiveAreaPref.Bounds,
+    dragBorder: Boolean,
     modifier: Modifier = Modifier
 ) {
     Box(modifier = modifier) {
@@ -511,6 +647,10 @@ fun TrackpadView(
             rightClickEnabled = rightClickEnabled,
             dragEnabled = dragEnabled,
             scrollEnabled = scrollEnabled,
+            threeFingerDrag = threeFingerDrag,
+            dragCommitSlopDp = dragCommitSlopDp,
+            activeArea = activeArea,
+            dragBorder = dragBorder,
             tapTimeoutMs = tapTimeoutMs,
             tapSlopDp = tapSlopDp,
             doubleTapIntervalMs = doubleTapIntervalMs,
@@ -567,7 +707,9 @@ fun TrackpadView(
                         modifier = HidMouseManager.KEY_MOD_LEFT_ALT
                     )
                 }
-            }
+            },
+            // 4本指ダブルタップ → 画面ブラックアウトのトグル
+            onFourFingerDoubleTap = onToggleBlackout
         )
 
         // 右上の控えめなドット。
@@ -681,6 +823,15 @@ fun SettingsScreen(
     onDragEnabledChange: (Boolean) -> Unit,
     scrollEnabled: Boolean,
     onScrollEnabledChange: (Boolean) -> Unit,
+    threeFingerDrag: Boolean,
+    onThreeFingerDragChange: (Boolean) -> Unit,
+    dragCommitSlopDp: Float,
+    onDragCommitSlopDpChange: (Float) -> Unit,
+    dragBorder: Boolean,
+    onDragBorderChange: (Boolean) -> Unit,
+    blackoutGesture: Boolean,
+    onBlackoutGestureChange: (Boolean) -> Unit,
+    onOpenActiveAreaSettings: () -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -701,6 +852,31 @@ fun SettingsScreen(
                 .weight(1f)
         ) {
             // ─────────────── 接続・ペアリング ───────────────
+            // ─────────────── 入力面 ───────────────
+            item { SettingsGroupHeader("入力面") }
+
+            // 対象領域 (active area) 調整画面への入り口。
+            // 画面の端を切って「ここだけタッチを受け付ける」矩形を作る。
+            item {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onOpenActiveAreaSettings() }
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(text = "対象領域の調整", color = Color.White)
+                        Text(
+                            text = "タッチを受け付ける範囲を絞る (向き別に別管理)",
+                            color = Color(0xFF888888),
+                            fontSize = 12.sp
+                        )
+                    }
+                    Text(text = "›", color = Color(0xFF888888), fontSize = 20.sp)
+                }
+            }
+
             item { SettingsGroupHeader("接続・ペアリング") }
 
             // 現在の HID 接続状態を1行表示
@@ -771,6 +947,9 @@ fun SettingsScreen(
             item { RightClickToggle(rightClickEnabled, onRightClickEnabledChange, Modifier.fillMaxWidth()) }
             item { DragToggle(dragEnabled, onDragEnabledChange, Modifier.fillMaxWidth()) }
             item { ScrollToggle(scrollEnabled, onScrollEnabledChange, Modifier.fillMaxWidth()) }
+            item { ThreeFingerDragToggle(threeFingerDrag, onThreeFingerDragChange, Modifier.fillMaxWidth()) }
+            item { DragBorderToggle(dragBorder, onDragBorderChange, Modifier.fillMaxWidth()) }
+            item { BlackoutGestureToggle(blackoutGesture, onBlackoutGestureChange, Modifier.fillMaxWidth()) }
             item { InertialScrollToggle(inertialScroll, onInertialScrollChange, Modifier.fillMaxWidth()) }
             item { InertialStackingToggle(inertialStacking, onInertialStackingChange, Modifier.fillMaxWidth()) }
             item { PinchZoomToggle(pinchZoom, onPinchZoomChange, Modifier.fillMaxWidth()) }
@@ -967,6 +1146,22 @@ fun SettingsScreen(
                 )
             }
 
+            // ダブルタップ→ドラッグ移行しきい値。
+            // 0 にすると「少しでも動けばドラッグ」、大きくすると誤発火しにくいが
+            // 短いストロークが「ただのダブルタップ」に流れて PC 側でダブルクリック扱いになりがち。
+            item {
+                SliderSetting(
+                    title = "ダブルタップ→ドラッグしきい値",
+                    value = dragCommitSlopDp,
+                    onValueChange = onDragCommitSlopDpChange,
+                    valueRange = DragCommitSlopPref.MIN..DragCommitSlopPref.MAX,
+                    valueLabel = { "${it.toInt()}dp" },
+                    leftLabel = "すぐドラッグ",
+                    rightLabel = "明確に動かす",
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+
             // クリック押下保持時間
             item {
                 SliderSetting(
@@ -1147,6 +1342,102 @@ fun ScrollToggle(
             Text(text = "2本指スクロール", color = Color.White)
             Text(
                 text = "OFF にすると 2本指で上下/左右ドラッグしてもスクロールしない",
+                color = Color(0xFF888888),
+                fontSize = 12.sp
+            )
+        }
+        Switch(checked = enabled, onCheckedChange = onEnabledChange)
+    }
+}
+
+/**
+ * 3本指ドラッグの ON/OFF トグル。
+ *
+ * ON にすると 3本指でトラックパッドを動かすと「左ボタン押下中のドラッグ」として送信される。
+ * macOS の "3 本指ドラッグ" 相当。OFF だと 3本指で触れても何も起きない。
+ */
+@Composable
+fun ThreeFingerDragToggle(
+    enabled: Boolean,
+    onEnabledChange: (Boolean) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .clickable { onEnabledChange(!enabled) }
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(text = "3本指ドラッグ", color = Color.White)
+            Text(
+                text = "ON にすると 3本指で動かす間、左ボタン押下中のドラッグになる",
+                color = Color(0xFF888888),
+                fontSize = 12.sp
+            )
+        }
+        Switch(checked = enabled, onCheckedChange = onEnabledChange)
+    }
+}
+
+/**
+ * ドラッグ中の縁取り表示の ON/OFF トグル。
+ *
+ * ON にすると、ダブルタップ→ドラッグ や 3本指ドラッグの最中にトラックパッド面の縁に
+ * 薄グレーの枠が出る (= 視覚的に「いま掴んでドラッグ中」を示す)。OFF にすると枠を出さない。
+ */
+@Composable
+fun DragBorderToggle(
+    enabled: Boolean,
+    onEnabledChange: (Boolean) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .clickable { onEnabledChange(!enabled) }
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(text = "ドラッグ縁取り表示", color = Color.White)
+            Text(
+                text = "ドラッグ中だけ画面の縁に枠を描画して「掴んでる」を視覚化する",
+                color = Color(0xFF888888),
+                fontSize = 12.sp
+            )
+        }
+        Switch(checked = enabled, onCheckedChange = onEnabledChange)
+    }
+}
+
+/**
+ * 4本指ダブルタップによる画面ブラックアウト切替ジェスチャの ON/OFF トグル。
+ *
+ * ON にすると 4本指のダブルタップで画面ブラックアウトの ON/OFF が切り替わる。
+ * OFF にするとジェスチャが無効化され、誤発火しなくなる。
+ */
+@Composable
+fun BlackoutGestureToggle(
+    enabled: Boolean,
+    onEnabledChange: (Boolean) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .clickable { onEnabledChange(!enabled) }
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(text = "4本指ダブルタップで輝度切替", color = Color.White)
+            Text(
+                text = "ON にすると 4本指ダブルタップで画面の真っ暗表示 ON/OFF が切り替わる",
                 color = Color(0xFF888888),
                 fontSize = 12.sp
             )
@@ -1544,6 +1835,184 @@ fun LogsScreen(
             logs = AppLog.entries,
             modifier = Modifier.fillMaxSize()
         )
+    }
+}
+
+/**
+ * 対象領域 (Active Area) 調整画面。
+ *
+ * トラックパッド面のうち「タッチを受け付ける有効領域」を矩形で指定する。
+ * 4 辺それぞれに境界線とドラッグハンドルが置かれていて、ハンドルを動かすと領域が変わる。
+ * 領域外は暗く描画され、内部は中間トーンで描画される。
+ *
+ * - リアルタイム反映 (ドラッグ中に [onBoundsChange] が随時呼ばれる)
+ * - [ActiveAreaPref.MIN_AXIS_SPAN] による最小幅クランプで「完全に潰れて操作不能」を防止
+ * - 「全面に戻す」ボタンで初期値 ([ActiveAreaPref.Bounds.FULL]) にリセット
+ *
+ * @param bounds         現在の境界値
+ * @param onBoundsChange ドラッグで境界が動くたびに呼ばれる
+ * @param onReset        「全面に戻す」ボタンの押下で呼ばれる
+ * @param onBack         戻るボタンで呼ばれる
+ * @param modifier       配置調整用 Modifier
+ */
+@Composable
+fun ActiveAreaScreen(
+    bounds: ActiveAreaPref.Bounds,
+    onBoundsChange: (ActiveAreaPref.Bounds) -> Unit,
+    onReset: () -> Unit,
+    onBack: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    // ドラッグハンドル内のジェスチャー処理に「最新の bounds と onChange」を渡したいが、
+    // pointerInput(Unit) でキャプチャするとクロージャに古い値が固定されてしまう。
+    // rememberUpdatedState で参照経由にして、ドラッグ中も常に最新値を見えるようにする。
+    val boundsRef = rememberUpdatedState(bounds)
+    val onChangeRef = rememberUpdatedState(onBoundsChange)
+
+    // Canvas を全画面に広げて、メイン画面の TrackpadSurface と完全に同じ寸法で
+    // プレビューする。ヘッダは TopBar として領域を奪わず、半透明オーバーレイで
+    // 上に重ねる (ボタンは半透明バーの上に残るので操作はできる)。
+    // こうすることで「調整画面で見た位置 = メイン画面で反映される位置」が一致する。
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .background(Color(0xFF0A0A0A)) // 領域外色 (= 全体背景)
+    ) {
+        // 領域全部を有効領域プレビュー + ドラッグハンドルに使う。
+        BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+            val density = LocalDensity.current
+            val widthPx = with(density) { maxWidth.toPx() }
+            val heightPx = with(density) { maxHeight.toPx() }
+
+            val leftPx = bounds.left * widthPx
+            val rightPx = bounds.right * widthPx
+            val topPx = bounds.top * heightPx
+            val bottomPx = bounds.bottom * heightPx
+
+            // ─── 可視化用 Canvas ───
+            // 領域内を中間グレーで塗り、領域外は親 Box の背景色 (0xFF0A0A0A) のままにする。
+            // 4 辺の境界は色の差とドラッグハンドルの位置で十分わかるので、境界線そのものは描かない。
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                drawRect(
+                    color = Color(0xFF2A2A2A),
+                    topLeft = Offset(leftPx, topPx),
+                    size = Size(rightPx - leftPx, bottomPx - topPx)
+                )
+            }
+
+            // ─── ドラッグハンドル 4 個 ───
+            // 各辺の中央に円形ハンドル。ドラッグ方向 (垂直 or 水平) はその辺で固定。
+            // ハンドル位置は bounds に追随するので、Modifier.offset で都度配置する。
+            val handleSize = 36.dp
+            val handleSizePx = with(density) { handleSize.toPx() }
+            val halfHandlePx = handleSizePx / 2f
+            val minSpan = ActiveAreaPref.MIN_AXIS_SPAN
+
+            // ───── 上端 (Top) ハンドル: 上下にドラッグ ─────
+            Box(
+                modifier = Modifier
+                    .offset {
+                        IntOffset(
+                            x = (widthPx / 2f - halfHandlePx).toInt(),
+                            y = (topPx - halfHandlePx).toInt()
+                        )
+                    }
+                    .size(handleSize)
+                    .background(Color.White, shape = CircleShape)
+                    .pointerInput(Unit) {
+                        detectDragGestures { _, dragAmount ->
+                            val cur = boundsRef.value
+                            val delta = dragAmount.y / heightPx
+                            val newTop = (cur.top + delta)
+                                .coerceIn(0f, cur.bottom - minSpan)
+                            onChangeRef.value(cur.copy(top = newTop))
+                        }
+                    }
+            )
+
+            // ───── 下端 (Bottom) ハンドル: 上下にドラッグ ─────
+            Box(
+                modifier = Modifier
+                    .offset {
+                        IntOffset(
+                            x = (widthPx / 2f - halfHandlePx).toInt(),
+                            y = (bottomPx - halfHandlePx).toInt()
+                        )
+                    }
+                    .size(handleSize)
+                    .background(Color.White, shape = CircleShape)
+                    .pointerInput(Unit) {
+                        detectDragGestures { _, dragAmount ->
+                            val cur = boundsRef.value
+                            val delta = dragAmount.y / heightPx
+                            val newBottom = (cur.bottom + delta)
+                                .coerceIn(cur.top + minSpan, 1f)
+                            onChangeRef.value(cur.copy(bottom = newBottom))
+                        }
+                    }
+            )
+
+            // ───── 左端 (Left) ハンドル: 左右にドラッグ ─────
+            Box(
+                modifier = Modifier
+                    .offset {
+                        IntOffset(
+                            x = (leftPx - halfHandlePx).toInt(),
+                            y = (heightPx / 2f - halfHandlePx).toInt()
+                        )
+                    }
+                    .size(handleSize)
+                    .background(Color.White, shape = CircleShape)
+                    .pointerInput(Unit) {
+                        detectDragGestures { _, dragAmount ->
+                            val cur = boundsRef.value
+                            val delta = dragAmount.x / widthPx
+                            val newLeft = (cur.left + delta)
+                                .coerceIn(0f, cur.right - minSpan)
+                            onChangeRef.value(cur.copy(left = newLeft))
+                        }
+                    }
+            )
+
+            // ───── 右端 (Right) ハンドル: 左右にドラッグ ─────
+            Box(
+                modifier = Modifier
+                    .offset {
+                        IntOffset(
+                            x = (rightPx - halfHandlePx).toInt(),
+                            y = (heightPx / 2f - halfHandlePx).toInt()
+                        )
+                    }
+                    .size(handleSize)
+                    .background(Color.White, shape = CircleShape)
+                    .pointerInput(Unit) {
+                        detectDragGestures { _, dragAmount ->
+                            val cur = boundsRef.value
+                            val delta = dragAmount.x / widthPx
+                            val newRight = (cur.right + delta)
+                                .coerceIn(cur.left + minSpan, 1f)
+                            onChangeRef.value(cur.copy(right = newRight))
+                        }
+                    }
+            )
+        }
+
+        // ─── 操作ボタン (バー背景なし、ボタンのみ浮かせる) ───
+        // ヘッダ枠で領域を取らず、戻る/全面に戻す を画面の左上・右上に直接置く。
+        // ボタン自体は TextButton の click 領域だけが反応し、それ以外のタッチは
+        // 下の Canvas / ドラッグハンドルに貫通する。
+        TextButton(
+            onClick = onBack,
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .padding(4.dp)
+        ) { Text("← 戻る", color = Color.White) }
+        TextButton(
+            onClick = onReset,
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(4.dp)
+        ) { Text("全面に戻す", color = Color.White) }
     }
 }
 
@@ -1977,6 +2446,8 @@ private fun HidState.toDisplayText(): String = when (this) {
  * @param onPinchEnd     ピンチ終了時に呼ばれる。Ctrl リリースを送る想定。
  * @param onFourFingerSwipeLeft  4本指で左方向へスワイプ後、指を離した時。「戻る」(Alt+←) を送る想定。
  * @param onFourFingerSwipeRight 4本指で右方向へスワイプ後、指を離した時。「進む」(Alt+→) を送る想定。
+ * @param onFourFingerDoubleTap  4本指のタップを、ダブルタップ間隔内に 2 回連続で行ったときに呼ばれる。
+ *                               輝度ブラックアウトのトグル等のグローバルなトグルに使う想定。
  */
 @Composable
 fun TrackpadSurface(
@@ -2001,6 +2472,10 @@ fun TrackpadSurface(
     rightClickEnabled: Boolean = true,
     dragEnabled: Boolean = true,
     scrollEnabled: Boolean = true,
+    threeFingerDrag: Boolean = true,
+    dragCommitSlopDp: Float = 0f,
+    activeArea: ActiveAreaPref.Bounds = ActiveAreaPref.Bounds.FULL,
+    dragBorder: Boolean = true,
     tapTimeoutMs: Float = 250f,
     tapSlopDp: Float = 16f,
     doubleTapIntervalMs: Float = 300f,
@@ -2015,7 +2490,8 @@ fun TrackpadSurface(
     onPinchZoom: (ticks: Int) -> Unit = {},
     onPinchEnd: () -> Unit = {},
     onFourFingerSwipeLeft: () -> Unit = {},
-    onFourFingerSwipeRight: () -> Unit = {}
+    onFourFingerSwipeRight: () -> Unit = {},
+    onFourFingerDoubleTap: () -> Unit = {}
 ) {
     // 現在押されている指の状態を保持する。
     //   キー  : PointerId.value（OS が各指に振る一意な ID。指が離れる→再度触ると新しい ID になる）
@@ -2031,6 +2507,15 @@ fun TrackpadSurface(
     // progress : 0.0 = 開始位置、1.0 = 閾値到達、それ以上も許容
     var fourFingerSwipeDirection by remember { mutableStateOf(0) }
     var fourFingerSwipeProgress by remember { mutableStateOf(0f) }
+
+    // 3本指ドラッグ中フラグ。pointerInput 内で commit 時に true、ジェスチャー終了時に false に戻す。
+    // 4-finger swipe の発火ガードに使う。
+    var threeFingerDragActive by remember { mutableStateOf(false) }
+
+    // 左ボタン押下中 (= ドラッグモード) フラグ。ダブルタップ→ドラッグ / 3本指ドラッグ
+    // どちらでも立つ統一フラグ。Canvas が読んで縁取り (= drag 中の視覚表現) を描く。
+    // pointerInput 内の inDragMode はこのフィールドを直接更新する (Compose state 化済み)。
+    var inDragMode by remember { mutableStateOf(false) }
 
     // 慣性スクロール (フリック後の自動継続) を起動・キャンセルするためのスコープと Job 保持。
     // remember で Composable の生存期間にバインドされる。
@@ -2062,7 +2547,8 @@ fun TrackpadSurface(
                 val doubleTapMaxIntervalMsLong = doubleTapIntervalMs.toLong()
                 var previousTapEndTime = 0L        // 最後の単一指タップ完了時刻。0 は「まだない」
                 var dragArmed = false              // 現在のジェスチャーがドラッグ候補か
-                var inDragMode = false             // ドラッグ送信中か (左ボタン保持中)
+                // inDragMode は Composable レベルの Compose state (Canvas に縁取りを出すため可視化が必要)。
+                // ここでは宣言せず、外側で declare 済みの inDragMode (by remember) を直接読み書きする。
 
                 /**
                  * 与えられた delta (px) に sensitivity を掛け、整数化した上で onMove / onDrag に渡す。
@@ -2091,6 +2577,10 @@ fun TrackpadSurface(
                 //   - 3本以上 → 今は何もしない
                 val tapTimeoutMsLong = tapTimeoutMs.toLong()
                 val tapSlopPx = tapSlopDp.dp.toPx()
+                // dragArmed (= 直前にタップした、ユーザーがドラッグを意図している) 状態のときの
+                // ドラッグ移行しきい値 (px)。tap slop とは独立に [DragCommitSlopPref] で設定する。
+                // 0 にすると「少しでも動けばドラッグ」、大きくすると「明確に動いたときだけドラッグ」になる。
+                val dragArmedCommitPx = dragCommitSlopDp.dp.toPx()
                 var gestureStartTime = 0L
                 var gestureCancelled = false
                 var maxConcurrentFingers = 0
@@ -2142,6 +2632,30 @@ fun TrackpadSurface(
                 var fourFingerEndX = 0f
                 var fourFingerEndY = 0f
 
+                // ─── 対象領域 (active area) 用の状態 ───
+                // 指の press-start 時点で activeArea の中にあった指の ID だけを保持する。
+                // 領域外で接地した指は最初から「存在しなかった」扱いで、ジェスチャ検出・カウント
+                // からも除外される。これによって「2本指で 1 本だけ領域内」のケースが 2本指ジェスチャ
+                // (右クリック・ピンチ・スクロール等) として誤発火するのを防ぐ。
+                // ジェスチャは「validPointerIds が空 → 非空」に切り替わった瞬間に開始、
+                // 「非空 → 空」になった瞬間に終了する。
+                val validPointerIds = mutableSetOf<Long>()
+
+                // ─── 4本指ダブルタップ用の状態 ───
+                // 前回の 4本指タップ完了時刻。次に 4本指タップが doubleTapInterval 以内に来たら
+                // double-tap として onFourFingerDoubleTap を発火する。0 は「まだない」。
+                var lastFourFingerTapEndTime = 0L
+
+                // ─── 3本指ドラッグ用の状態 ───
+                // 3本指の重心が tapSlop を超えて動いたら commit して左ボタンを押下する。
+                // commit 後は「前フレームと現フレーム両方で押されている指」(= 共通指) の
+                // 平均移動量を採用するので、途中で 1 本浮いてもカーソルがジャンプしない。
+                // - threeFingerDragActive: Composable レベルの Compose state (上で宣言済み)。
+                //   Canvas に縁取りを描画するため可視化が必要なので外側に持っている。
+                // - threeFingerDragStartCenter: commit 待ちの間の初期重心。slop 判定に使う。
+                //   3本指が初めて揃ったフレームで記録され、本数が崩れたら null に戻す。
+                var threeFingerDragStartCenter: Offset? = null
+
                 // ─── 性能計測 (temporary instrumentation) ───
                 // 1 イベントの処理にどれだけ時間がかかっているかを 60 イベント単位で集計し、
                 // 平均・最大・historical 平均サイズをログに出す。「もっさり」の原因切り分け用。
@@ -2160,6 +2674,11 @@ fun TrackpadSurface(
                         val event = awaitPointerEvent()
                         // 計測: 1 イベント処理の開始時刻 (性能計測用、不要になったら削除)
                         val perfStartNs = System.nanoTime()
+                        // このフレームで dragArmed の per-frame commit が発火したか。
+                        // commit 時に「開始位置→現在位置」の累積移動を一発で onDrag に送るので、
+                        // 同フレームで 1本指 move ブロックが「前フレーム→現フレーム」の差分も emitMove
+                        // すると二重送信になる。それを防ぐためのフラグ。
+                        var justCommittedDrag = false
                         // event.changes には「このフレームで変化があったすべての指」の情報が入っている。
                         // - pressed == true  : 今この瞬間に画面に触れている指
                         // - pressed == false : 直前まで触れていて、今離れた指
@@ -2179,75 +2698,110 @@ fun TrackpadSurface(
                             val isRelease = !change.pressed && change.previousPressed
 
                             if (isPressStart) {
-                                if (!gestureActive) {
-                                    // 最初の指が触れた。新しいジェスチャーを開始。
-                                    gestureActive = true
-                                    gestureStartTime = change.uptimeMillis
-                                    gestureCancelled = false
-                                    maxConcurrentFingers = 0
-                                    fingerStartPositions.clear()
-                                    // 慣性スクロール中なら、現在速度を carryover に退避してから停止する。
-                                    // フリック・スタッキング ON で、かつジェスチャー終了時にフリック条件を
-                                    // 満たした場合のみこの carryover が新慣性に加算される。
-                                    if (inertialStacking && inertiaJobHolder.job?.isActive == true) {
-                                        carryoverVx = inertiaVel[0]
-                                        carryoverVy = inertiaVel[1]
-                                    } else {
-                                        carryoverVx = 0f
-                                        carryoverVy = 0f
+                                // 領域内判定 (画面サイズに対する比率で比較)
+                                val w = size.width.toFloat()
+                                val h = size.height.toFloat()
+                                val px = change.position.x
+                                val py = change.position.y
+                                val insideArea =
+                                    px >= activeArea.left * w && px <= activeArea.right * w &&
+                                    py >= activeArea.top * h && py <= activeArea.bottom * h
+                                if (insideArea) {
+                                    // この指は「有効」。validPointerIds に追加し、必要なら新規ジェスチャを開始する。
+                                    val wasEmpty = validPointerIds.isEmpty()
+                                    validPointerIds.add(change.id.value)
+                                    if (wasEmpty && !gestureActive) {
+                                        // 最初の有効指 = 新しいジェスチャーを開始。
+                                        gestureActive = true
+                                        gestureStartTime = change.uptimeMillis
+                                        gestureCancelled = false
+                                        maxConcurrentFingers = 0
+                                        fingerStartPositions.clear()
+                                        // 慣性スクロール中なら carryover に退避してから停止。
+                                        if (inertialStacking && inertiaJobHolder.job?.isActive == true) {
+                                            carryoverVx = inertiaVel[0]
+                                            carryoverVy = inertiaVel[1]
+                                        } else {
+                                            carryoverVx = 0f
+                                            carryoverVy = 0f
+                                        }
+                                        inertiaJobHolder.job?.cancel()
+                                        inertiaJobHolder.job = null
+                                        inertiaVel[0] = 0f
+                                        inertiaVel[1] = 0f
+                                        velocitySamples.clear()
+                                        lastScrollFrameTime = 0L
+                                        // ─── ドラッグ判定の "腕利き" 設定 ───
+                                        val sinceLastTap = change.uptimeMillis - previousTapEndTime
+                                        dragArmed = dragEnabled &&
+                                                previousTapEndTime > 0L &&
+                                                sinceLastTap < doubleTapMaxIntervalMsLong
+                                        if (dragArmed) {
+                                            previousTapEndTime = 0L
+                                        }
                                     }
-                                    inertiaJobHolder.job?.cancel()
-                                    inertiaJobHolder.job = null
-                                    inertiaVel[0] = 0f
-                                    inertiaVel[1] = 0f
-                                    // 速度サンプルもリセット
-                                    velocitySamples.clear()
-                                    lastScrollFrameTime = 0L
-                                    // ─── ドラッグ判定の "腕利き" 設定 ───
-                                    // 直前のタップ完了から短時間以内であれば、このジェスチャーは
-                                    // ドラッグ移行の候補 (dragArmed)。一度使った "腕" は消費して
-                                    // 同じ previousTapEndTime で複数ジェスチャーが乗らないようにする。
-                                    // dragEnabled が false の場合は最初から武装しない (= ドラッグ移行を防ぐ)。
-                                    val sinceLastTap = change.uptimeMillis - previousTapEndTime
-                                    dragArmed = dragEnabled &&
-                                            previousTapEndTime > 0L &&
-                                            sinceLastTap < doubleTapMaxIntervalMsLong
-                                    if (dragArmed) {
-                                        previousTapEndTime = 0L
-                                    }
+                                    fingerStartPositions[change.id.value] = change.position
+                                    // 有効指の最大同時数で更新
+                                    maxConcurrentFingers = maxOf(maxConcurrentFingers, validPointerIds.size)
                                 }
-                                fingerStartPositions[change.id.value] = change.position
-                                // 今この瞬間の同時押下数で最大値を更新
-                                maxConcurrentFingers = maxOf(maxConcurrentFingers, pressed.size)
+                                // else: 領域外で接地。この指は最初から存在しないものとして扱う。
                             }
 
-                            if (isRelease && gestureActive) {
-                                // この指の総移動量がしきい値を超えていたらジェスチャー全体をキャンセル
-                                val startPos = fingerStartPositions[change.id.value]
-                                if (startPos != null) {
-                                    val distance = (change.position - startPos).getDistance()
-                                    if (distance >= tapSlopPx) {
-                                        gestureCancelled = true
+                            if (isRelease) {
+                                // 有効指の release のみ tap-slop チェック対象。領域外指は無視。
+                                val wasValid = validPointerIds.remove(change.id.value)
+                                if (wasValid && gestureActive) {
+                                    val startPos = fingerStartPositions[change.id.value]
+                                    if (startPos != null) {
+                                        val distance = (change.position - startPos).getDistance()
+                                        if (distance >= tapSlopPx) {
+                                            gestureCancelled = true
+                                        }
                                     }
                                 }
                             }
                         }
 
+                        // 領域フィルタを通した「有効な押下中指リスト」。
+                        // 以降の検出ロジックはこれをベースに pressed.size / pressed[N] 等を解釈する。
+                        val validPressed = pressed.filter { it.id.value in validPointerIds }
+
                         // ─── ドラッグモード移行チェック ───
-                        // dragArmed な単一指ジェスチャーで、押下開始からの移動が slop を超えたら
+                        // dragArmed な単一指ジェスチャーで、押下開始からの移動が dragArmedCommitPx を超えたら
                         // 左ボタン押下状態のドラッグへ移行する。同時に gestureCancelled を立てて
                         // ジェスチャー終了時のタップ発火を抑制する。
+                        // dragArmedCommitPx は DragCommitSlopPref で設定 (デフォルト 0 = 少しでも動けばドラッグ)。
                         if (dragArmed && !inDragMode &&
-                            pressed.size == 1 && maxConcurrentFingers == 1) {
-                            val change = pressed.first()
+                            validPressed.size == 1 && maxConcurrentFingers == 1) {
+                            val change = validPressed.first()
                             val startPos = fingerStartPositions[change.id.value]
                             if (startPos != null) {
                                 val movedDist = (change.position - startPos).getDistance()
-                                if (movedDist > tapSlopPx) {
+                                if (movedDist > dragArmedCommitPx) {
                                     inDragMode = true
                                     gestureCancelled = true
-                                    AppLog.d("ドラッグモード開始")
+                                    AppLog.d("ドラッグモード開始 (per-frame, dist=${movedDist.toInt()}px)")
                                     onDragStart()
+                                    // commit 時に「開始位置→現在位置」の累積移動を 1 度の onDrag で送る。
+                                    // これがないと、移動量が sensitivity 倍しても 1px 未満になる
+                                    // (= sub-pixel) のとき、subsequent な emitMove が ix=iy=0 で
+                                    // onDrag を呼ばずに済ませてしまい、PC 側で button-down/up だけが
+                                    // 届いて単なる click 扱いになる (= ユーザーが感じている
+                                    // 「ダブルタップ判定」の正体)。sub-pixel は方向にあわせて
+                                    // ±1px に切り上げ、最低限の drag が PC に届くことを保証する。
+                                    val totalX = (change.position.x - startPos.x) * sensitivity + residualX
+                                    val totalY = (change.position.y - startPos.y) * sensitivity + residualY
+                                    var ix = totalX.toInt()
+                                    var iy = totalY.toInt()
+                                    if (ix == 0 && totalX != 0f) ix = if (totalX > 0) 1 else -1
+                                    if (iy == 0 && totalY != 0f) iy = if (totalY > 0) 1 else -1
+                                    residualX = totalX - ix
+                                    residualY = totalY - iy
+                                    if (ix != 0 || iy != 0) {
+                                        onDrag(ix, iy)
+                                    }
+                                    // 同フレームの 1本指 emitMove を抑止 (二重送信防止)。
+                                    justCommittedDrag = true
                                 }
                             }
                         }
@@ -2266,9 +2820,11 @@ fun TrackpadSurface(
                         // 期間は移動を一切送らない。slop までの "助走" でカーソルが動いてしまうと、
                         // ドラッグ開始位置がズレて感じられるため。
                         when {
-                            pressed.size == 1 && maxConcurrentFingers <= 1 -> {
-                                val change = pressed.first()
-                                if (change.previousPressed && !(dragArmed && !inDragMode)) {
+                            validPressed.size == 1 && maxConcurrentFingers <= 1 -> {
+                                val change = validPressed.first()
+                                // justCommittedDrag = true のフレームでは、上の commit ブロックで既に
+                                // 累積移動を onDrag に送り終えているのでスキップする (二重送信防止)。
+                                if (change.previousPressed && !(dragArmed && !inDragMode) && !justCommittedDrag) {
                                     // previousPosition を基点にして、historical(時間順) → 現在 の順に
                                     // 各サブイベント区間の差分を順番に送る。
                                     var prevX = change.previousPosition.x
@@ -2288,8 +2844,8 @@ fun TrackpadSurface(
                                     )
                                 }
                             }
-                            pressed.isEmpty() -> {
-                                // 全指離した瞬間。次のドラッグ開始時に古い誤差を引きずらないよう
+                            validPressed.isEmpty() -> {
+                                // 有効指がすべて離れた瞬間。次のドラッグ開始時に古い誤差を引きずらないよう
                                 // 累積をリセットする。
                                 residualX = 0f
                                 residualY = 0f
@@ -2297,17 +2853,74 @@ fun TrackpadSurface(
                             // それ以外（マルチタッチ中など）はマウス移動として扱わない
                         }
 
+                        // ─── 3本指ドラッグ判定 & 移動送信 ───
+                        // commit 条件:
+                        //   - threeFingerDrag 設定が ON
+                        //   - 現在 3本指、かつ過去にも 3本までしか触れていない (maxConcurrentFingers <= 3)
+                        //   - 他モードに入っていない (drag/scroll/pinch のいずれも未 commit)
+                        //   - 3本指の重心が tapSlop を超えて動いた
+                        // commit 時に inDragMode = true として 1本指 drag と同じ「左ボタン保持」セマンティクスに合流させ、
+                        // emitMove() の出力先が onDrag に切り替わるようにする。
+                        // 同時に gestureCancelled = true を立てて、ジェスチャー終了時に 3本指 "タップ" 扱いされるのも防ぐ。
+                        if (threeFingerDrag && !inDragMode && !scrollCommitted && !pinchCommitted &&
+                            validPressed.size == 3 && maxConcurrentFingers <= 3) {
+                            val cx = (validPressed[0].position.x + validPressed[1].position.x +
+                                    validPressed[2].position.x) / 3f
+                            val cy = (validPressed[0].position.y + validPressed[1].position.y +
+                                    validPressed[2].position.y) / 3f
+                            val startCenter = threeFingerDragStartCenter
+                            if (startCenter == null) {
+                                // 3本指が揃った最初のフレーム。基準重心を記録するだけで、まだ commit しない。
+                                threeFingerDragStartCenter = Offset(cx, cy)
+                            } else {
+                                val movedDist = (Offset(cx, cy) - startCenter).getDistance()
+                                if (movedDist > tapSlopPx) {
+                                    threeFingerDragActive = true
+                                    inDragMode = true
+                                    gestureCancelled = true
+                                    AppLog.d("3本指ドラッグ開始")
+                                    onDragStart()
+                                }
+                            }
+                        } else if (!threeFingerDragActive && validPressed.size != 3) {
+                            // 3本指 commit 前に本数が崩れたら、基準重心をリセット。
+                            // 再び 3本指になった時に、その瞬間の重心から slop を測り直す。
+                            threeFingerDragStartCenter = null
+                        }
+
+                        // commit 後の移動量。
+                        // 「前フレームと現フレーム両方で押されている指」(= 共通指) の平均移動量を採用。
+                        // 共通指だけ見るので、本数が 3→2 / 2→1 と減ってもカーソルがジャンプしない。
+                        // 共通指 0 (全指 up の瞬間など) のときは送らない。
+                        if (threeFingerDragActive && validPressed.isNotEmpty()) {
+                            var sumDx = 0f
+                            var sumDy = 0f
+                            var commonCount = 0
+                            for (c in validPressed) {
+                                if (c.previousPressed) {
+                                    sumDx += c.position.x - c.previousPosition.x
+                                    sumDy += c.position.y - c.previousPosition.y
+                                    commonCount++
+                                }
+                            }
+                            if (commonCount > 0) {
+                                // 1本指 drag と同じ residual / sensitivity 経路に合流させる。
+                                // inDragMode が true なので emitMove 内で自動的に onDrag に流れる。
+                                emitMove(sumDx / commonCount, sumDy / commonCount)
+                            }
+                        }
+
                         // ─── 4本指スワイプの重心トラッキング ───
-                        // pressed.size == 4 になった瞬間の重心を記録し、4本指の間は重心を更新し続ける。
+                        // validPressed.size == 4 になった瞬間の重心を記録し、4本指の間は重心を更新し続ける。
                         // ジェスチャー終了時に「総移動量」を見て左右スワイプを判定する。
                         // 同時に Canvas 用の予兆表示状態 (direction / progress) を更新。
-                        if (pressed.size == 4) {
+                        if (validPressed.size == 4) {
                             val cx =
-                                (pressed[0].position.x + pressed[1].position.x +
-                                        pressed[2].position.x + pressed[3].position.x) / 4f
+                                (validPressed[0].position.x + validPressed[1].position.x +
+                                        validPressed[2].position.x + validPressed[3].position.x) / 4f
                             val cy =
-                                (pressed[0].position.y + pressed[1].position.y +
-                                        pressed[2].position.y + pressed[3].position.y) / 4f
+                                (validPressed[0].position.y + validPressed[1].position.y +
+                                        validPressed[2].position.y + validPressed[3].position.y) / 4f
                             if (!fourFingerActive) {
                                 fourFingerActive = true
                                 fourFingerStartX = cx
@@ -2339,9 +2952,9 @@ fun TrackpadSurface(
                         // ピンチ: 2本指間の距離が slop を超えて変化 (かつ単一指移動より支配的)
                         // スクロール: いずれかの指が slop を超えて移動 (距離変化は支配的でない)
                         // 一度確定したらジェスチャー終了までモードを維持する。
-                        if (pressed.size == 2) {
-                            val c1 = pressed[0]
-                            val c2 = pressed[1]
+                        if (validPressed.size == 2) {
+                            val c1 = validPressed[0]
+                            val c2 = validPressed[1]
                             val s1 = fingerStartPositions[c1.id.value]
                             val s2 = fingerStartPositions[c2.id.value]
 
@@ -2378,8 +2991,8 @@ fun TrackpadSurface(
                                 }
                             }
                             if (scrollCommitted) {
-                                val c1 = pressed[0]
-                                val c2 = pressed[1]
+                                val c1 = validPressed[0]
+                                val c2 = validPressed[1]
                                 if (c1.previousPressed && c2.previousPressed) {
                                     // フレーム全体での速度サンプルを記録（慣性スクロール用）。
                                     // historical を巻き込まない総デルタで十分。
@@ -2465,14 +3078,54 @@ fun TrackpadSurface(
                         }
 
                         // ─── タップ判定 & ドラッグ終了（ジェスチャー終了時） ───
-                        // 全ての指が離れた瞬間に、最大同時押下数と経過時間でタップ種別を決める。
-                        if (gestureActive && pressed.isEmpty()) {
+                        // 全ての有効指が離れた瞬間に、最大同時押下数と経過時間でタップ種別を決める。
+                        // 領域外指の存在は影響しない (validPointerIds が空になった瞬間で判定)。
+                        if (gestureActive && validPointerIds.isEmpty()) {
                             // event.changes は離れた指の change を含む。uptimeMillis は同一フレーム内なら同じなので
                             // 先頭の change を使えば終了時刻として十分。
                             val endTime = event.changes.firstOrNull()?.uptimeMillis ?: gestureStartTime
                             val duration = endTime - gestureStartTime
 
+                            // ─── dragArmed の late commit (リフト時の救済) ───
+                            // 「速くて短い」ジェスチャー (= 数フレームで指が離れて、フレーム単位の
+                            // 判定では dragArmedCommitPx を越えないまま終わるケース) を救う。
+                            // リフト位置と開始位置の合計移動量で再判定し、超えていれば
+                            // ここで一気に onDragStart → onDrag → (続く inDragMode 分岐で onDragEnd) を流す。
+                            // これによって PC 側にはちゃんとボタン押下→移動→リリースの 3 段が届く。
+                            if (!inDragMode && dragArmed && maxConcurrentFingers == 1) {
+                                val released = event.changes.firstOrNull {
+                                    !it.pressed && it.previousPressed
+                                }
+                                val start = released?.let { fingerStartPositions[it.id.value] }
+                                if (released != null && start != null) {
+                                    val dxRaw = released.position.x - start.x
+                                    val dyRaw = released.position.y - start.y
+                                    val finalDist = Offset(dxRaw, dyRaw).getDistance()
+                                    if (finalDist > dragArmedCommitPx) {
+                                        AppLog.d("ドラッグモード開始 (late commit at release, dist=${finalDist.toInt()}px)")
+                                        inDragMode = true
+                                        gestureCancelled = true
+                                        onDragStart()
+                                        // 累積移動を一気に送る。
+                                        // sub-pixel movement は方向にあわせて ±1px に切り上げる
+                                        // (per-frame commit と同じ理由 — 0px に丸めると PC 側が click 扱い)。
+                                        val targetX = dxRaw * sensitivity + residualX
+                                        val targetY = dyRaw * sensitivity + residualY
+                                        var ix = targetX.toInt()
+                                        var iy = targetY.toInt()
+                                        if (ix == 0 && targetX != 0f) ix = if (targetX > 0) 1 else -1
+                                        if (iy == 0 && targetY != 0f) iy = if (targetY > 0) 1 else -1
+                                        residualX = targetX - ix
+                                        residualY = targetY - iy
+                                        if (ix != 0 || iy != 0) {
+                                            onDrag(ix, iy)
+                                        }
+                                    }
+                                }
+                            }
+
                             // ドラッグ中だった場合は左ボタンを離す。タップ発火より先にやる。
+                            // (上の late commit を通った場合もここで onDragEnd が走る)
                             if (inDragMode) {
                                 AppLog.d("ドラッグモード終了")
                                 onDragEnd()
@@ -2487,7 +3140,10 @@ fun TrackpadSurface(
                             // ─── 4本指スワイプ判定 ───
                             // 4本指が同時に触れた経緯があり、設定が ON、最大同時押下数 == 4 (5本以上なら無効) の時、
                             // 重心の総移動量を見て左右スワイプを判定。横移動が縦より十分支配的なら発火。
-                            if (fourFingerSwipe && fourFingerActive && maxConcurrentFingers == 4) {
+                            // また !threeFingerDragActive で、「3 本指で先に drag commit したあと 4 本目を足した」ケースで
+                            // swipe が誤発火しないようにする。
+                            if (fourFingerSwipe && fourFingerActive && maxConcurrentFingers == 4 &&
+                                !threeFingerDragActive) {
                                 val totalDx = fourFingerEndX - fourFingerStartX
                                 val totalDy = fourFingerEndY - fourFingerStartY
                                 val absDx = kotlin.math.abs(totalDx)
@@ -2519,7 +3175,21 @@ fun TrackpadSurface(
                                             onTwoFingerTap()
                                         }
                                     }
-                                    // 3本以上は今は何もしない
+                                    4 -> {
+                                        // 4本指タップ。前回の 4本指タップから doubleTapInterval 以内なら
+                                        // ダブルタップとして発火 (= ブラックアウトのトグル等)。
+                                        val sinceLastFourFingerTap = endTime - lastFourFingerTapEndTime
+                                        if (lastFourFingerTapEndTime > 0L &&
+                                            sinceLastFourFingerTap < doubleTapMaxIntervalMsLong) {
+                                            AppLog.d("4本指ダブルタップ検出: interval=${sinceLastFourFingerTap}ms")
+                                            lastFourFingerTapEndTime = 0L
+                                            onFourFingerDoubleTap()
+                                        } else {
+                                            // 1 回目のタップ。時刻だけ記録して 2 回目を待つ。
+                                            lastFourFingerTapEndTime = endTime
+                                        }
+                                    }
+                                    // 3本指、または 5本以上は今は何もしない
                                 }
                             }
                             // ─── 慣性スクロールの発火判定 ───
@@ -2556,8 +3226,11 @@ fun TrackpadSurface(
                                 }
                             }
 
-                            // ジェスチャー完了 → 状態をクリアして次のジェスチャーを待つ
+                            // ジェスチャー完了 → 状態をクリアして次のジェスチャーを待つ。
+                            // validPointerIds は press-start で領域外指を弾く時にも参照されるので
+                            // ここで明示的にクリア (理論上は既に空のはずだが念のため)。
                             gestureActive = false
+                            validPointerIds.clear()
                             fingerStartPositions.clear()
                             scrollCommitted = false
                             scrollResidualY = 0f
@@ -2583,6 +3256,10 @@ fun TrackpadSurface(
                             // 予兆表示も消す
                             fourFingerSwipeDirection = 0
                             fourFingerSwipeProgress = 0f
+                            // 3本指ドラッグ状態のリセット
+                            // (inDragMode は前段で onDragEnd と同時に false に戻している)
+                            threeFingerDragActive = false
+                            threeFingerDragStartCenter = null
                         }
 
                         // ─── 性能計測 (temporary instrumentation) ───
@@ -2611,21 +3288,6 @@ fun TrackpadSurface(
     ) {
         // Canvas は描画専用のコンポーザブル。pointers が更新されると自動で再描画される。
         Canvas(modifier = Modifier.fillMaxSize()) {
-            // ─── 下部インジケーター ───
-            // 端末が回転しても「どっちが下か」が分かるように、画面下端付近に
-            // 横一直線のバーを描く。Compose のレイアウトは回転に追従するので、
-            // この描画は常に「視覚的な下側」に出る。
-            val bottomInset = 18.dp.toPx()      // 画面下端からのオフセット
-            val sideInset = 48.dp.toPx()        // 左右端からのオフセット（中央寄せの見た目）
-            val lineY = size.height - bottomInset
-            drawLine(
-                color = Color(0xFFAAAAAA),      // 控えめなグレーで主張しすぎない
-                start = Offset(sideInset, lineY),
-                end = Offset(size.width - sideInset, lineY),
-                strokeWidth = 4.dp.toPx(),
-                cap = StrokeCap.Round           // 線の両端を丸めて柔らかい印象に
-            )
-
             // ─── ピンチ中の2点間の線と目盛り ───
             // ピンチ確定中で、設定で有効、かつ実際に 2 本指が押されているときだけ描く。
             // 円より先に描いて、円が線の上に重なる見た目にする。
@@ -2702,36 +3364,74 @@ fun TrackpadSurface(
                 }
             }
 
-            // ─── 4本指スワイプの予兆 (カーテン + 中央三角) ───
+            // ─── タッチポインタ ───
+            // pointerDots が OFF の場合は描画しない。
+            if (pointerDots) {
+                pointers.forEach { (id, p) ->
+                    drawCircle(
+                        // 指(ID)ごとに色を変えると、どの指がどこにあるか視覚的に区別できる
+                        color = pointerColor(id),
+                        radius = 30f,    // 円の半径（ピクセル単位）
+                        center = p       // 円の中心 = タッチ位置
+                    )
+                }
+            }
+
+            // ─── 対象領域外の黒塗り ───
+            // activeArea の外側を 4 つの矩形で真っ黒に塗りつぶす。
+            // 領域外にはみ出したドット・スワイプカーテン・ピンチ線等のインジケータを視覚的に隠す。
+            // タッチ判定側はすでに validPointerIds で領域外指を除外しているので、見た目と挙動が一致する。
+            // ドラッグ縁取りはこの上に重ねるため、ここで描画した黒の上にあとから縁取りが乗る。
+            val w = size.width
+            val h = size.height
+            val aTop = activeArea.top * h
+            val aBottom = activeArea.bottom * h
+            val aLeft = activeArea.left * w
+            val aRight = activeArea.right * w
+            if (aTop > 0f) {
+                drawRect(Color.Black, Offset(0f, 0f), Size(w, aTop))
+            }
+            if (aBottom < h) {
+                drawRect(Color.Black, Offset(0f, aBottom), Size(w, h - aBottom))
+            }
+            if (aLeft > 0f) {
+                drawRect(Color.Black, Offset(0f, aTop), Size(aLeft, aBottom - aTop))
+            }
+            if (aRight < w) {
+                drawRect(Color.Black, Offset(aRight, aTop), Size(w - aRight, aBottom - aTop))
+            }
+
+            // ─── 4本指スワイプの予兆 (カーテン + 中央三角、黒塗りの上に重ねる) ───
             // スワイプ方向の端から薄いグレーのカーテンが侵入する。
             // 幅 = 進捗 (画面幅 × progress)。閾値到達で不透明度が上がって「届いた」を示す。
             // 中央には背景色と同じダーク三角を描く。カーテンに覆われると「ダーク三角がグレーから抜けた」
             // 形で現れて、進捗が直感的に分かる。
             // fourFingerSwipeIndicator が OFF の場合はカーテン・三角ともに描画しない。
+            // 黒塗りより後に描くことで、対象領域を狭めていてもカーテン/三角は画面全体で見える。
             if (fourFingerSwipeIndicator && fourFingerSwipeDirection != 0) {
                 val progressClamped = fourFingerSwipeProgress.coerceIn(0f, 1f)
                 val direction = fourFingerSwipeDirection
-                val w = size.width
-                val h = size.height
+                val sw = size.width
+                val sh = size.height
 
                 // カーテンの不透明度: 閾値前は控えめ、閾値到達で 100% に跳ね上がる
                 val curtainAlpha = if (fourFingerSwipeProgress >= 1f) 1f else 0.45f
                 val curtainColor = Color(0xFFAAAAAA).copy(alpha = curtainAlpha)
-                val curtainWidth = w * progressClamped
+                val curtainWidth = sw * progressClamped
 
                 if (direction > 0) {
                     // 右スワイプ → 左端から右へ伸びる (指の動きを追うカーテン)
                     drawRect(
                         color = curtainColor,
                         topLeft = Offset(0f, 0f),
-                        size = Size(curtainWidth, h)
+                        size = Size(curtainWidth, sh)
                     )
                 } else {
                     // 左スワイプ → 右端から左へ伸びる
                     drawRect(
                         color = curtainColor,
-                        topLeft = Offset(w - curtainWidth, 0f),
-                        size = Size(curtainWidth, h)
+                        topLeft = Offset(sw - curtainWidth, 0f),
+                        size = Size(curtainWidth, sh)
                     )
                 }
 
@@ -2741,8 +3441,8 @@ fun TrackpadSurface(
                 if (fourFingerSwipeProgress >= 1f) {
                     val triangleWidth = 80.dp.toPx()
                     val triangleHeight = 64.dp.toPx()
-                    val cx = w / 2f
-                    val cy = h / 2f
+                    val cx = sw / 2f
+                    val cy = sh / 2f
                     val trianglePath = Path().apply {
                         if (direction > 0) {
                             // ▶ 右向き
@@ -2761,18 +3461,49 @@ fun TrackpadSurface(
                 }
             }
 
-            // ─── タッチポインタ ───
-            // pointerDots が OFF の場合は描画しない。
-            if (pointerDots) {
-                pointers.forEach { (id, p) ->
-                    drawCircle(
-                        // 指(ID)ごとに色を変えると、どの指がどこにあるか視覚的に区別できる
-                        color = pointerColor(id),
-                        radius = 30f,    // 円の半径（ピクセル単位）
-                        center = p       // 円の中心 = タッチ位置
+            // ─── ドラッグ中の縁取り (黒塗りの上に重ねる) ───
+            // ダブルタップ→ドラッグ / 3本指ドラッグ どちらでも (= inDragMode が立つあらゆる経路で)
+            // トラックパッド面の縁に薄グレー (= 4-finger swipe カーテンと同色) の枠を描画し、
+            // 「いま左ボタンを掴んでドラッグ中」を視覚的に示す。
+            // 外側は画面の長方形に沿わせ、内側は角を丸めて柔らかい見た目にする。
+            // Path の偶奇塗り (PathFillType.EvenOdd) で「外矩形 ⊖ 内角丸矩形」=枠だけ を一発で描画する。
+            // 領域外を黒で潰したあとに描くことで、縁取りは黒の上にも残って見える。
+            // dragBorder 設定が OFF の場合は描画しない。
+            if (inDragMode && dragBorder) {
+                val borderColor = Color(0xFFAAAAAA)
+                val borderPx = 6.dp.toPx()        // 縁取りの太さ (ほどほど)
+                val innerRadiusPx = 24.dp.toPx()  // 内側の角丸半径
+                val framePath = Path().apply {
+                    addRect(Rect(0f, 0f, size.width, size.height))
+                    addRoundRect(
+                        RoundRect(
+                            rect = Rect(
+                                borderPx, borderPx,
+                                size.width - borderPx, size.height - borderPx
+                            ),
+                            cornerRadius = CornerRadius(innerRadiusPx)
+                        )
                     )
+                    fillType = PathFillType.EvenOdd
                 }
+                drawPath(framePath, color = borderColor)
             }
+
+            // ─── 下部インジケーター (最前面、黒塗りの上にも乗る) ───
+            // 端末が回転しても「どっちが下か」が分かるように、画面下端付近に
+            // 横一直線のバーを描く。機能は無く、向きの目印だけが目的。
+            // 対象領域を狭めて画面下が黒塗りになっても、このインジケータは見えてほしいので
+            // Canvas の最後 (黒塗りの上) に描画する。
+            val bottomInset = 18.dp.toPx()      // 画面下端からのオフセット
+            val sideInset = 48.dp.toPx()        // 左右端からのオフセット（中央寄せの見た目）
+            val indicatorY = size.height - bottomInset
+            drawLine(
+                color = Color(0xFFAAAAAA),      // 控えめなグレーで主張しすぎない
+                start = Offset(sideInset, indicatorY),
+                end = Offset(size.width - sideInset, indicatorY),
+                strokeWidth = 4.dp.toPx(),
+                cap = StrokeCap.Round           // 線の両端を丸めて柔らかい印象に
+            )
         }
     }
 }
